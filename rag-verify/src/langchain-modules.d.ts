@@ -8,18 +8,6 @@ declare module '@langchain/groq' {
   }
 }
 
-declare module '@langchain/openai' {
-  import { Embeddings } from '@langchain/core/embeddings';
-
-  export class OpenAIEmbeddings extends Embeddings {
-    constructor(config: {
-      apiKey?: string;
-      model?: string;
-      configuration?: { baseURL?: string };
-    });
-  }
-}
-
 declare module '@langchain/qdrant' {
   import { Embeddings } from '@langchain/core/embeddings';
   import { VectorStore } from '@langchain/core/vectorstores';
@@ -33,6 +21,11 @@ declare module '@langchain/qdrant' {
 
     addDocuments(documents: Document[]): Promise<void>;
     similaritySearch(query: string, k?: number): Promise<Document[]>;
+    similaritySearchWithScore(query: string, k?: number): Promise<[Document, number][]>;
+    maxMarginalRelevanceSearch(
+      query: string,
+      options: { k: number; fetchK?: number; lambda?: number }
+    ): Promise<Document[]>;
   }
 }
 

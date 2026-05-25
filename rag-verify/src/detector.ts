@@ -1,16 +1,25 @@
 import 'dotenv/config';
-import { OpenAIEmbeddings } from '@langchain/openai';
 import { QdrantVectorStore } from '@langchain/qdrant';
 import { Document } from '@langchain/core/documents';
-import { RecursiveCharacterTextSplitter } from 'langchain/text_splitter';
 import { getJson } from 'serpapi';
 import { QdrantClient } from '@qdrant/js-client-rest';
 import {
-  GROQ_EMBEDDING_DIMENSION,
-  GROQ_EMBED_MODEL,
-  GROQ_OPENAI_BASE_URL,
-  requireGroqApiKey,
-} from './groq-config';
+  HF_EMBED_MODEL,
+  HF_EMBEDDING_DIMENSION,
+  HuggingFaceEmbeddings,
+  requireHuggingfaceApiKey,
+} from './embeddings';
+import {
+  articlesToDocuments,
+  buildRetrievalQueries,
+  dedupeDocumentsByLink,
+  extractKeywordTokens,
+  formatArticleForEmbedding,
+  MAX_ARTICLES_PER_NEWS_QUERY,
+  MAX_ARTICLES_TO_INDEX,
+  rankEvidenceCandidates,
+  sanitizeNewsArticle,
+} from './evidence-retrieval';
 import { groqCompleteWithRetry } from './groq-llm';
 
 // ==============================
@@ -38,38 +47,70 @@ interface ClaimAnalysis {
   extractedClaims: string[];
   keywords: string[];
   context: string;
+  searchQueries: string[];
 }
 
 // ==============================
 // CLASS: MisinformationDetector
 // ==============================
 class MisinformationDetector {
-  private embeddings: OpenAIEmbeddings;
+  private embeddings: HuggingFaceEmbeddings;
   private qdrantClient: QdrantClient;
   private vectorStore: QdrantVectorStore | null = null;
-  private textSplitter: RecursiveCharacterTextSplitter;
 
   constructor() {
-    const groqApiKey = requireGroqApiKey();
+    requireHuggingfaceApiKey();
     if (!process.env.QDRANT_URL || !process.env.QDRANT_API_KEY)
       throw new Error('QDRANT_URL and QDRANT_API_KEY are required');
 
-    this.embeddings = new OpenAIEmbeddings({
-      apiKey: groqApiKey,
-      model: GROQ_EMBED_MODEL,
-      configuration: { baseURL: GROQ_OPENAI_BASE_URL },
-    });
+    this.embeddings = new HuggingFaceEmbeddings();
 
     // qdrantClient will be created lazily in initializeVectorStore with
     // resilient URL handling (some Qdrant Cloud endpoints require different
     // host/port/path combinations). This avoids hard-failing at construction
     // time and lets initializeVectorStore attempt fallbacks.
     this.qdrantClient = null as unknown as QdrantClient;
+  }
 
-    this.textSplitter = new RecursiveCharacterTextSplitter({
-      chunkSize: 1000,
-      chunkOverlap: 200,
-    });
+  private getCollectionVectorSize(collectionInfo: {
+    config?: { params?: { vectors?: unknown } };
+  }): number | undefined {
+    const vectors = collectionInfo.config?.params?.vectors;
+    if (!vectors || typeof vectors !== 'object') return undefined;
+    if ('size' in vectors && typeof (vectors as { size: unknown }).size === 'number') {
+      return (vectors as { size: number }).size;
+    }
+    const named = Object.values(vectors as Record<string, { size?: number }>);
+    const first = named.find((v) => typeof v?.size === 'number');
+    return first?.size;
+  }
+
+  private async ensureCollectionDimension(collectionName: string): Promise<void> {
+    const expectedSize = this.getEmbeddingDimension();
+    const { collections } = await this.qdrantClient.getCollections();
+    const exists = collections.some((col) => col.name === collectionName);
+
+    if (!exists) {
+      await this.qdrantClient.createCollection(collectionName, {
+        vectors: { size: expectedSize, distance: 'Cosine' },
+      });
+      console.log(`✅ Created Qdrant collection "${collectionName}" (${expectedSize} dims)`);
+      return;
+    }
+
+    const info = await this.qdrantClient.getCollection(collectionName);
+    const actualSize = this.getCollectionVectorSize(info);
+
+    if (actualSize !== undefined && actualSize !== expectedSize) {
+      console.warn(
+        `⚠️ Collection "${collectionName}" uses ${actualSize} dims but embeddings are ${expectedSize}. Recreating (old vectors will be removed).`
+      );
+      await this.qdrantClient.deleteCollection(collectionName);
+      await this.qdrantClient.createCollection(collectionName, {
+        vectors: { size: expectedSize, distance: 'Cosine' },
+      });
+      console.log(`✅ Recreated Qdrant collection "${collectionName}" (${expectedSize} dims)`);
+    }
   }
 
   private getRecencyScore(value: any): number {
@@ -88,7 +129,13 @@ class MisinformationDetector {
   // ==============================
   // INIT VECTOR STORE
   // ==============================
-  async initializeVectorStore(collectionName: string = 'news_articles'): Promise<void> {
+  static defaultCollectionName(): string {
+    if (process.env.QDRANT_COLLECTION) return process.env.QDRANT_COLLECTION;
+    const slug = HF_EMBED_MODEL.split('/').pop()?.replace(/[^a-z0-9]+/gi, '_') ?? 'embed';
+    return `news_${slug}`;
+  }
+
+  async initializeVectorStore(collectionName: string = MisinformationDetector.defaultCollectionName()): Promise<void> {
     try {
       // Ensure qdrant client exists and try a few URL fallbacks if necessary.
       const rawUrl = process.env.QDRANT_URL as string;
@@ -126,13 +173,7 @@ class MisinformationDetector {
         throw e;
       }
 
-      const collectionExists = collections.collections.some((col: any) => col.name === collectionName);
-
-      if (!collectionExists) {
-        await this.qdrantClient.createCollection(collectionName, {
-          vectors: { size: this.getEmbeddingDimension(), distance: 'Cosine' },
-        });
-      }
+      await this.ensureCollectionDimension(collectionName);
 
       this.vectorStore = new QdrantVectorStore(this.embeddings, {
         client: this.qdrantClient,
@@ -156,19 +197,17 @@ class MisinformationDetector {
         q: query,
         hl: 'en',
         gl: 'in',
-        num: 20,
+        num: MAX_ARTICLES_PER_NEWS_QUERY,
         api_key: process.env.SERPAPI_KEY,
       };
 
       const results = await getJson(params);
       const articles =
-        results.news_results?.map((article: any) => ({
-          title: article.title,
-          snippet: article.snippet,
-          link: article.link,
-          date: article.date,
-          source: article.source,
-        })) || [];
+        results.news_results
+          ?.map((article) =>
+            sanitizeNewsArticle(article as unknown as Record<string, unknown>)
+          )
+          .slice(0, MAX_ARTICLES_PER_NEWS_QUERY) || [];
 
       return articles.sort((a: NewsArticle, b: NewsArticle) => this.getRecencyScore(b.date) - this.getRecencyScore(a.date));
     } catch (error) {
@@ -187,33 +226,20 @@ class MisinformationDetector {
     }
 
     try {
-      const documents: Document[] = [];
+      const valid = articles.filter(
+        (a) => (a.title || a.snippet) && a.link.startsWith('http')
+      );
+      const documents = dedupeDocumentsByLink(articlesToDocuments(valid)).slice(
+        0,
+        MAX_ARTICLES_TO_INDEX
+      );
 
-      for (const article of articles) {
-        const content = `Title: ${article.title}\nSnippet: ${article.snippet}\nDate: ${article.date}\nSource: ${
-          article.source || 'Unknown'
-        }`;
-
-        const chunks = await this.textSplitter.splitText(content);
-
-        for (const chunk of chunks) {
-          documents.push(
-            new Document({
-              pageContent: chunk,
-              metadata: {
-                title: article.title,
-                link: article.link,
-                date: article.date,
-                source: article.source,
-                type: 'news_article',
-              },
-            })
-          );
-        }
-      }
+      if (documents.length === 0) return;
 
       await this.vectorStore.addDocuments(documents);
-      console.log(`✅ Stored ${documents.length} chunks from ${articles.length} articles`);
+      console.log(
+        `✅ Stored ${documents.length} articles (cap ${MAX_ARTICLES_TO_INDEX}, ${articles.length} fetched)`
+      );
     } catch (error) {
       console.error('❌ Error storing articles:', error);
       throw error;
@@ -254,7 +280,7 @@ class MisinformationDetector {
   // PUBLIC HELPER: GET EMBEDDING DIMENSION
   // ==============================
   getEmbeddingDimension(): number {
-    return GROQ_EMBEDDING_DIMENSION;
+    return HF_EMBEDDING_DIMENSION;
   }
 
   // ==============================
@@ -311,8 +337,13 @@ Claim: "${claim}"
 Return JSON:
 {
   "extractedClaims": ["claim1", "claim2"],
-  "keywords": ["keyword1", "keyword2"],
+  "keywords": ["keyword1", "keyword2", "named entities"],
   "context": "short context",
+  "searchQueries": [
+    "specific Google News query with names/dates",
+    "broader contextual query",
+    "query with fact check or verification"
+  ],
   "specificity": "vague/specific"
 }`;
 
@@ -324,11 +355,16 @@ Return JSON:
       });
       const parsed = this.extractJsonFromResponse(response);
 
+      const searchQueries = Array.isArray(parsed.searchQueries)
+        ? parsed.searchQueries.filter((q: unknown) => typeof q === 'string' && q.trim())
+        : [];
+
       return {
         claim,
         extractedClaims: parsed.extractedClaims || [claim],
         keywords: parsed.keywords || claim.split(' ').filter(w => w.length > 3),
         context: parsed.context || 'General claim verification',
+        searchQueries: searchQueries.length > 0 ? searchQueries : await this.generateSearchQueries(claim),
       };
     } catch (error) {
       console.error('❌ Error parsing claim analysis:', error);
@@ -337,25 +373,167 @@ Return JSON:
         extractedClaims: [claim],
         keywords: claim.split(' ').filter(w => w.length > 3).slice(0, 5),
         context: 'General claim verification',
+        searchQueries: await this.generateSearchQueries(claim),
       };
     }
+  }
+
+  async generateSearchQueries(claim: string, context?: string): Promise<string[]> {
+    const prompt = `Generate exactly 3 Google News search queries to verify this claim.
+
+Claim: "${claim}"
+${context ? `Context: ${context}` : ''}
+
+Rules:
+- Query 1: very specific (include names, places, dates from the claim if present)
+- Query 2: broader topic context
+- Query 3: include "fact check" or "verification"
+Return ONLY 3 lines, one query per line, no numbering or bullets.`;
+
+    try {
+      const response = await groqCompleteWithRetry(prompt, {
+        maxTokens: 200,
+        temperature: 0.2,
+        requireJson: false,
+        retries: 1,
+      });
+      const queries = response
+        .split('\n')
+        .map((q) => q.replace(/^[\d.\-*)\s]+/, '').trim())
+        .filter((q) => q.length > 8)
+        .slice(0, 3);
+      if (queries.length > 0) return queries;
+    } catch (error) {
+      console.warn('⚠️ Search query generation failed, using fallback:', error);
+    }
+
+    return [
+      claim,
+      `${claim.split(' ').slice(0, 8).join(' ')} news`,
+      `${claim.split(' ').slice(0, 8).join(' ')} fact check`,
+    ];
+  }
+
+  async fetchAndStoreEvidence(
+    analysis: ClaimAnalysis,
+    maxQueries: number = 3
+  ): Promise<NewsArticle[]> {
+    const queries = (analysis.searchQueries.length > 0
+      ? analysis.searchQueries
+      : await this.generateSearchQueries(analysis.claim, analysis.context)
+    ).slice(0, maxQueries);
+
+    const seenLinks = new Set<string>();
+    const collected: NewsArticle[] = [];
+
+    for (const query of queries) {
+      if (collected.length >= MAX_ARTICLES_TO_INDEX) break;
+
+      const articles = await this.fetchGoogleNewsSearch(query);
+      for (const article of articles) {
+        if (collected.length >= MAX_ARTICLES_TO_INDEX) break;
+        const link = article.link?.toLowerCase().trim();
+        if (!link || seenLinks.has(link)) continue;
+        seenLinks.add(link);
+        collected.push(article);
+      }
+      await new Promise((r) => setTimeout(r, 600));
+    }
+
+    const toStore = collected.slice(0, MAX_ARTICLES_TO_INDEX);
+
+    if (toStore.length > 0) {
+      await this.storeNewsArticles(toStore);
+    }
+
+    return toStore;
   }
 
   // ==============================
   // EVIDENCE SEARCH
   // ==============================
-  async findRelevantEvidence(claim: string, k: number = 10): Promise<Document[]> {
-    if (!this.vectorStore) {
-      console.warn('⚠️ Vector store not initialized — similarity search unavailable');
-      return [];
+  async findRelevantEvidence(
+    claim: string,
+    k: number = 12,
+    analysis?: ClaimAnalysis,
+    freshArticles: NewsArticle[] = []
+  ): Promise<Document[]> {
+    const queryContext: ClaimAnalysis =
+      analysis ?? {
+        claim,
+        extractedClaims: [claim],
+        keywords: claim.split(' ').filter((w) => w.length > 3).slice(0, 8),
+        context: '',
+        searchQueries: [],
+      };
+
+    const keywords = extractKeywordTokens(claim, queryContext.keywords);
+    const candidates: Array<{ doc: Document; semanticScore: number }> = [];
+
+    for (const article of freshArticles) {
+      candidates.push({
+        doc: new Document({
+          pageContent: formatArticleForEmbedding(article),
+          metadata: {
+            title: article.title,
+            link: article.link,
+            date: article.date,
+            source: article.source,
+            type: 'news_article',
+            fresh: true,
+          },
+        }),
+        semanticScore: 0.92,
+      });
     }
 
-    try {
-      return await this.vectorStore.similaritySearch(claim, k);
-    } catch (error) {
-      console.error('❌ Error finding evidence:', error);
-      return [];
+    if (this.vectorStore) {
+      try {
+        const retrievalQueries = buildRetrievalQueries(claim, queryContext);
+        const fetchK = Math.max(k * 3, 24);
+
+        const mmrDocs = await this.vectorStore.maxMarginalRelevanceSearch(claim, {
+          k: Math.min(k, 10),
+          fetchK,
+          lambda: 0.65,
+        });
+        for (const doc of mmrDocs) {
+          candidates.push({ doc, semanticScore: 0.85 });
+        }
+
+        for (const query of retrievalQueries) {
+          const scored = await this.vectorStore.similaritySearchWithScore(query, 8);
+          for (const [doc, score] of scored) {
+            candidates.push({ doc, semanticScore: score });
+          }
+        }
+      } catch (error) {
+        console.error('❌ Error finding evidence:', error);
+      }
+    } else {
+      console.warn('⚠️ Vector store not initialized — using fresh articles only');
     }
+
+    const merged = new Map<string, { doc: Document; semanticScore: number }>();
+    for (const { doc, semanticScore } of candidates) {
+      const meta = doc.metadata as Record<string, string | undefined>;
+      const key =
+        meta.link?.toLowerCase().trim() ||
+        `${meta.title ?? ''}::${doc.pageContent.slice(0, 80)}`;
+      const prev = merged.get(key);
+      if (!prev || semanticScore > prev.semanticScore) {
+        merged.set(key, { doc, semanticScore });
+      }
+    }
+
+    const ranked = rankEvidenceCandidates(
+      Array.from(merged.values()),
+      keywords,
+      { minCombinedScore: 0.38, limit: k }
+    );
+
+    console.log(`🔎 Evidence: ${ranked.length} docs after ranking (${candidates.length} candidates)`);
+    return ranked;
   }
 
   // ==============================
@@ -366,13 +544,7 @@ Return JSON:
     evidence: Document[],
     analysis: ClaimAnalysis
   ): Promise<VerificationResult> {
-    const sortedEvidence = [...evidence].sort(
-      (a, b) =>
-        this.getRecencyScore((b.metadata as any)?.date ?? (b.metadata as any)?.published_at) -
-        this.getRecencyScore((a.metadata as any)?.date ?? (a.metadata as any)?.published_at)
-    );
-
-    const evidenceText = sortedEvidence
+    const evidenceText = evidence
       .map(
         (doc, i) =>
           `Evidence ${i + 1}: ${doc.pageContent}\nSource: ${doc.metadata.source}\nDate: ${doc.metadata.date}\n---`
@@ -387,11 +559,12 @@ You are a fact-checker. Verify the following claim using the provided evidence.
 Claim: "${claim}"
 Extracted Sub-Claims: ${analysis.extractedClaims.join(', ')}
 
-Evidence (sorted with newest first):
+Evidence (ranked by relevance to the claim; #1 is strongest match):
 ${evidenceText}
 
 Guidelines:
-- ALWAYS prioritize the most recent credible evidence. If newer and older sources conflict, trust the newer data unless it is clearly unreliable.
+- Prefer evidence that directly addresses the claim's entities, dates, and assertions.
+- When sources conflict, favor recent credible reporting, but do not ignore strong older evidence that directly refutes or supports the claim.
 - Keep reasoning concise but precise so downstream systems can explain the recency trade-offs.
 
 Return JSON:
@@ -411,7 +584,7 @@ Return JSON:
       });
       const parsed = this.extractJsonFromResponse(response);
 
-      const relevantArticles: NewsArticle[] = sortedEvidence.map((doc) => {
+      const relevantArticles: NewsArticle[] = evidence.map((doc) => {
         const meta = doc.metadata as Record<string, string | undefined>;
         return {
           title: meta.title ?? 'Untitled',
@@ -451,7 +624,10 @@ Return JSON:
     for (const topic of topics) {
       try {
         console.log(`📰 Fetching news for: ${topic}`);
-        const articles = await this.fetchGoogleNewsSearch(topic);
+        const articles = (await this.fetchGoogleNewsSearch(topic)).slice(
+          0,
+          MAX_ARTICLES_TO_INDEX
+        );
         if (articles.length > 0) await this.storeNewsArticles(articles);
         await new Promise(r => setTimeout(r, 2000));
       } catch (error) {
@@ -468,36 +644,11 @@ Return JSON:
       console.log(`🔍 Starting verification for claim: "${claim}"`);
       const analysis = await this.analyzeClaim(claim);
 
-      console.log('📰 Fetching related news...');
-      const searchQueries = analysis.keywords.slice(0, 3).join(' ');
-      const freshNews = await this.fetchGoogleNewsSearch(searchQueries);
-      if (freshNews.length > 0) await this.storeNewsArticles(freshNews);
+      console.log('📰 Fetching targeted news for claim...');
+      const freshNews = await this.fetchAndStoreEvidence(analysis, 3);
 
       console.log('🔎 Finding relevant evidence...');
-      let evidenceRaw: Document[] = [];
-
-      // If vector store is not initialized, fall back to using freshly fetched
-      // news as candidate evidence (no similarity ranking available).
-      if (!this.isVectorStoreInitialized() && freshNews.length > 0) {
-        evidenceRaw = freshNews.map((a: any) =>
-          new Document({
-            pageContent: `Title: ${a.title}\nSnippet: ${a.snippet}\nDate: ${a.date}\nSource: ${a.source || 'Unknown'}`,
-            metadata: {
-              title: a.title,
-              link: a.link,
-              date: a.date,
-              source: a.source,
-            },
-          })
-        );
-      } else {
-        evidenceRaw = await this.findRelevantEvidence(claim, 20);
-      }
-      const evidence = evidenceRaw.sort(
-        (a, b) =>
-          this.getRecencyScore((b.metadata as any)?.date ?? (b.metadata as any)?.published_at) -
-          this.getRecencyScore((a.metadata as any)?.date ?? (a.metadata as any)?.published_at)
-      );
+      const evidence = await this.findRelevantEvidence(claim, 12, analysis, freshNews);
 
       if (evidence.length === 0)
         return {

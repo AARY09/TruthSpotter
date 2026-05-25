@@ -184,83 +184,21 @@ Always mention the urgency level explicitly and highlight ambiguities that could
     this.step(`📚 Stage 2 — Evidence Researcher running...`);
 
     try {
-      // 1) Generate search queries from analyst output
-      const qPrompt = `You are an Evidence Researcher Agent.
+      const analysis = await this.detector.analyzeClaim(claim);
+      const searchQueries = analysis.searchQueries;
+      this.step(`📌 Search queries: ${searchQueries.join(' | ')}`);
 
-From the following claim analysis, generate exactly 3 diverse search queries that will help verify the claim:
+      const newsArticles = await this.detector.fetchAndStoreEvidence(analysis, 3);
 
-${analystOutput}
-
-Rules:
-- One query should be very specific (include dates/locations if present).
-- One query should be broader and contextual.
-- One query should explicitly include the word "fact check" or "hoax".
-- Return ONLY the 3 queries, one per line, no bullets or extra text.`;
-
-      const qResult = await this.llm.invoke(qPrompt);
-
-      const searchQueries = (qResult.content as string)
-        .split('\n')
-        .map(q => q.trim())
-        .filter(Boolean)
-        .slice(0, 3);
-
-      this.step(`📌 Generated queries: ${searchQueries.join(' | ')}`);
-
-      // 2) Fetch news for each query, store into vector DB
-      const newsArticles: NewsArticle[] = [];
-      const keywordTokens = this.extractClaimKeywords(claim);
-
-      for (const q of searchQueries) {
-        this.step(`📰 Searching Google News for: "${q}"`);
-        const fresh = await this.detector.fetchGoogleNewsSearch(q);
-
-        if (fresh.length > 0) {
-          newsArticles.push(...fresh.slice(0, 5));
-
-          try {
-            await this.detector.storeNewsArticles(fresh);
-            this.step(`💾 Stored ${fresh.length} articles for query "${q}" in vector DB`);
-          } catch (e: any) {
-            this.step(`⚠️ Failed to store articles for "${q}": ${e?.message ?? 'unknown error'}`);
-          }
-        }
-
-        // small delay to avoid rate limits
-        await new Promise(res => setTimeout(res, 800));
-      }
-
-      // 3) Now retrieve relevant evidence from vector DB (RAG)
-      this.step(`🔎 Finding relevant evidence from vector store...`);
-      newsArticles.sort(
-        (a, b) => this.getRecencyScore(b.date) - this.getRecencyScore(a.date)
-      );
-      const kbDocsRaw = await this.detector.findRelevantEvidence(claim, 25);
-      const kbDocs = kbDocsRaw.sort(
-        (a, b) =>
-          this.getRecencyScore((b.metadata as any)?.date ?? (b.metadata as any)?.published_at) -
-          this.getRecencyScore((a.metadata as any)?.date ?? (a.metadata as any)?.published_at)
+      this.step(`🔎 Ranking evidence by relevance to claim...`);
+      const curatedKbDocs = await this.detector.findRelevantEvidence(
+        claim,
+        12,
+        analysis,
+        newsArticles
       );
 
-      const curatedNewsArticles = newsArticles
-        .map(article => ({
-          article,
-          score: this.scoreNewsArticle(article, keywordTokens),
-        }))
-        .filter(item => item.score >= 0.25)
-        .sort((a, b) => b.score - a.score)
-        .slice(0, 10)
-        .map(item => item.article);
-
-      const scoredDocs = kbDocs
-        .map(doc => ({
-          doc,
-          score: this.scoreDocument(doc, keywordTokens),
-        }))
-        .filter(item => item.score >= 0.2)
-        .sort((a, b) => b.score - a.score);
-
-      const curatedKbDocs = scoredDocs.slice(0, 12).map(item => item.doc);
+      const curatedNewsArticles = newsArticles.slice(0, 8);
 
       const summary = `Evidence summary:
 - Search Queries: ${searchQueries.join(', ')}

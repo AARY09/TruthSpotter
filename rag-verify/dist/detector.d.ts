@@ -20,14 +20,17 @@ interface ClaimAnalysis {
     extractedClaims: string[];
     keywords: string[];
     context: string;
+    searchQueries: string[];
 }
 declare class MisinformationDetector {
     private embeddings;
     private qdrantClient;
     private vectorStore;
-    private textSplitter;
     constructor();
+    private getCollectionVectorSize;
+    private ensureCollectionDimension;
     private getRecencyScore;
+    static defaultCollectionName(): string;
     initializeVectorStore(collectionName?: string): Promise<void>;
     fetchGoogleNewsSearch(query: string): Promise<NewsArticle[]>;
     storeNewsArticles(articles: NewsArticle[]): Promise<void>;
@@ -44,7 +47,9 @@ declare class MisinformationDetector {
     isVectorStoreInitialized(): boolean;
     extractJsonFromResponse(response: string): any;
     analyzeClaim(claim: string): Promise<ClaimAnalysis>;
-    findRelevantEvidence(claim: string, k?: number): Promise<Document[]>;
+    generateSearchQueries(claim: string, context?: string): Promise<string[]>;
+    fetchAndStoreEvidence(analysis: ClaimAnalysis, maxQueries?: number): Promise<NewsArticle[]>;
+    findRelevantEvidence(claim: string, k?: number, analysis?: ClaimAnalysis, freshArticles?: NewsArticle[]): Promise<Document[]>;
     verifyClaimWithEvidence(claim: string, evidence: Document[], analysis: ClaimAnalysis): Promise<VerificationResult>;
     updateNewsDatabase(topics: string[]): Promise<void>;
     verifyClaim(claim: string): Promise<VerificationResult>;

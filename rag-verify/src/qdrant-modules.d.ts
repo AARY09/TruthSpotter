@@ -18,6 +18,10 @@ declare module '@qdrant/js-client-rest' {
     constructor(config: QdrantClientConfig);
     
     getCollections(): Promise<CollectionsList>;
+    getCollection(name: string): Promise<{
+      config?: { params?: { vectors?: { size: number } | Record<string, { size: number }> } };
+    }>;
+    deleteCollection(name: string): Promise<void>;
     createCollection(name: string, config: {
       vectors: {
         size: number;

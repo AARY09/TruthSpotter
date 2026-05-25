@@ -55,9 +55,10 @@ Instead of just labeling something as *true or false*, it provides **transparent
 
 Required environment variables:
 
-- `GROQ_API_KEY` - Groq API key (chat + embeddings via Groq's OpenAI-compatible API)
+- `GROQ_API_KEY` - Groq API key (chat / JSON reasoning tasks)
 - `GROQ_CHAT_MODEL` - Optional chat model (default: `llama-3.3-70b-versatile`)
-- `GROQ_EMBED_MODEL` - Optional embedding model (default: `nomic-embed-text-v1.5`)
+- `HUGGINGFACE_API_KEY` - Hugging Face token for embeddings (`sentence-transformers/all-MiniLM-L6-v2`)
+- `HF_EMBED_MODEL` - Optional embedding model override
 - `QDRANT_URL` - Qdrant vector database URL
 - `QDRANT_API_KEY` - Qdrant API key for authentication
 - `SERPAPI_KEY` - SerpAPI key for Google News search

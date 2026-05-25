@@ -319,31 +319,16 @@ Provide a helpful response. Be concise but informative.`;
             const analysis = await this.detector.analyzeClaim(claim);
             this.agentInsights.claimAnalyst = `Extracted ${analysis.extractedClaims.length} sub-claims`;
             this.step(`✅ Claim Analyst completed`);
-            // Stage 2: Parallel search with limits (prevent sequential blocking)
+            // Stage 2: Targeted news fetch + index
             this.step(`📚 Stage 2 — Evidence Researcher running...`);
-            const searchQueries = analysis.keywords.slice(0, 2); // Reduced from 3
-            this.searchQueries = searchQueries;
-            // Parallel fetch with Promise.all instead of sequential
-            const articlePromises = searchQueries.map(query => this.detector.fetchGoogleNewsSearch(query)
-                .then(articles => articles.slice(0, 2)) // Limit per query
-                .catch(() => []) // Graceful failure
-            );
-            const allArticlesArrays = await Promise.allSettled(articlePromises);
-            const allArticles = allArticlesArrays
-                .filter(result => result.status === 'fulfilled')
-                .flatMap(result => result.value);
-            allArticles.sort((a, b) => this.getRecencyScore(b.date) - this.getRecencyScore(a.date));
-            // Batch store to reduce API calls
-            if (allArticles.length > 0) {
-                await this.detector.storeNewsArticles(allArticles.slice(0, 5));
-            }
-            this.step(`✅ Evidence Researcher completed`);
-            // Stage 3: Retrieve relevant evidence (pull extra, then sort by recency)
+            this.searchQueries = analysis.searchQueries;
+            const freshArticles = await this.detector.fetchAndStoreEvidence(analysis, 3);
+            this.agentInsights.evidenceResearcher = `Fetched ${freshArticles.length} articles for ${this.searchQueries.length} queries`;
+            this.step(`✅ Evidence Researcher completed (${freshArticles.length} articles)`);
+            // Stage 3: Hybrid retrieval (semantic + keywords + recency)
             this.step(`🔎 Stage 3 — Finding relevant evidence...`);
-            const evidenceDocsRaw = await this.detector.findRelevantEvidence(claim, 20);
-            this.evidenceDocs = evidenceDocsRaw.sort((a, b) => this.getRecencyScore(b.metadata?.date ?? b.metadata?.published_at) -
-                this.getRecencyScore(a.metadata?.date ?? a.metadata?.published_at));
-            this.step(`✅ Retrieved ${this.evidenceDocs.length} evidence documents (recency prioritized)`);
+            this.evidenceDocs = await this.detector.findRelevantEvidence(claim, 12, analysis, freshArticles);
+            this.step(`✅ Retrieved ${this.evidenceDocs.length} relevant evidence documents`);
             // Stage 4: Fact checking
             this.step(`⚖️ Stage 4 — Fact Checker running...`);
             const verification = await this.detector.verifyClaimWithEvidence(claim, this.evidenceDocs, analysis);
