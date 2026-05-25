@@ -1,4 +1,5 @@
 import { VerificationStatus } from "@/components/VerificationSidebar";
+import { API_URL } from "@/lib/api";
 
 export interface VerificationResponse {
   status: VerificationStatus;
@@ -29,7 +30,7 @@ export const verifyClaim = async (
   }[];
 }> => {
   try {
-    const response = await fetch("http://localhost:3000/verify-claim-agentic", {
+    const response = await fetch(`${API_URL}/verify-claim-agentic`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ claim }),

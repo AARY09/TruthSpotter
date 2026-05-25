@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.MAX_ARTICLES_PER_NEWS_QUERY = exports.MAX_ARTICLES_TO_INDEX = void 0;
+exports.MAX_EVIDENCE_RESULTS = exports.MAX_ARTICLES_PER_NEWS_QUERY = exports.MAX_SEARCH_QUERIES = exports.MAX_ARTICLES_TO_INDEX = void 0;
 exports.toTextField = toTextField;
 exports.sanitizeNewsArticle = sanitizeNewsArticle;
 exports.formatArticleForEmbedding = formatArticleForEmbedding;
@@ -14,9 +14,13 @@ exports.buildRetrievalQueries = buildRetrievalQueries;
 exports.rankEvidenceCandidates = rankEvidenceCandidates;
 const documents_1 = require("@langchain/core/documents");
 /** Max articles to fetch + embed per verification (override via MAX_ARTICLES env) */
-exports.MAX_ARTICLES_TO_INDEX = Math.min(Math.max(parseInt(process.env.MAX_ARTICLES ?? '20', 10) || 20, 1), 20);
-/** Per Google News query — keeps 3 queries under the global cap */
-exports.MAX_ARTICLES_PER_NEWS_QUERY = Math.max(3, Math.ceil(exports.MAX_ARTICLES_TO_INDEX / 3));
+exports.MAX_ARTICLES_TO_INDEX = Math.min(Math.max(parseInt(process.env.MAX_ARTICLES ?? '12', 10) || 12, 1), 20);
+/** Google News search queries per claim (primary + optional fact-check) */
+exports.MAX_SEARCH_QUERIES = Math.min(Math.max(parseInt(process.env.MAX_SEARCH_QUERIES ?? '2', 10) || 2, 1), 3);
+/** Per-query SerpAPI result cap */
+exports.MAX_ARTICLES_PER_NEWS_QUERY = Math.max(4, Math.ceil(exports.MAX_ARTICLES_TO_INDEX / exports.MAX_SEARCH_QUERIES));
+/** Evidence documents passed to the fact-checker */
+exports.MAX_EVIDENCE_RESULTS = Math.min(Math.max(parseInt(process.env.MAX_EVIDENCE_RESULTS ?? '8', 10) || 8, 3), 12);
 const STOP_WORDS = new Set([
     'about', 'after', 'also', 'been', 'being', 'from', 'have', 'that', 'their',
     'there', 'these', 'they', 'this', 'those', 'were', 'what', 'when', 'where',
@@ -141,29 +145,12 @@ function dedupeDocumentsByLink(docs) {
     }
     return out;
 }
-function buildRetrievalQueries(claim, analysis) {
-    const queries = new Set();
-    const context = analysis.context?.trim();
-    queries.add(claim.trim());
-    if (context && context.length > 10) {
-        queries.add(`${claim.trim()} — ${context}`);
-    }
-    for (const sub of analysis.extractedClaims.slice(0, 3)) {
-        const s = sub.trim();
-        if (s.length > 12)
-            queries.add(s);
-    }
-    const kw = analysis.keywords.filter(Boolean).slice(0, 6).join(' ');
-    if (kw.length > 8)
-        queries.add(kw);
-    for (const sq of analysis.searchQueries ?? []) {
-        const q = sq.trim();
-        if (q.length > 8)
-            queries.add(q);
-    }
-    const factCheck = `${claim.split(' ').slice(0, 12).join(' ')} fact check`.trim();
-    queries.add(factCheck);
-    return Array.from(queries).slice(0, 6);
+/** Vector search uses optimized queries only (avoids many HF embed calls) */
+function buildRetrievalQueries(_claim, analysis) {
+    const fromPlan = analysis.searchQueries?.filter((q) => q.trim().length > 4) ?? [];
+    if (fromPlan.length > 0)
+        return fromPlan.slice(0, exports.MAX_SEARCH_QUERIES);
+    return [_claim.trim()].filter(Boolean);
 }
 function rankEvidenceCandidates(candidates, keywords, options) {
     const minCombined = options?.minCombinedScore ?? 0.38;

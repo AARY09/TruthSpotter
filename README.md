@@ -66,7 +66,8 @@ Required environment variables:
 
 ### Frontend (`chatwiz-next`)
 
-- `VITE_API_URL` - Backend API URL (default: `http://localhost:3000`)
+- `NEXT_PUBLIC_API_URL` - Backend API URL for production (e.g. `https://truthspotter-0q6g.onrender.com`)
+- `VITE_API_URL` - Local dev backend URL (default: `http://localhost:3000`)
 
 Create a `.env` file in the `rag-verify` directory with these variables:
 

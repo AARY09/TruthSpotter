@@ -315,19 +315,20 @@ Provide a helpful response. Be concise but informative.`;
     // In agent-orchestrator.ts - Add batching and memory management
     async runVerification(claim) {
         try {
-            // Stage 1: Analyze claim with lighter model
+            // Stage 1: Query optimization + claim analysis
+            this.step(`🔍 Stage 1 — Optimizing search queries...`);
             const analysis = await this.detector.analyzeClaim(claim);
-            this.agentInsights.claimAnalyst = `Extracted ${analysis.extractedClaims.length} sub-claims`;
-            this.step(`✅ Claim Analyst completed`);
-            // Stage 2: Targeted news fetch + index
-            this.step(`📚 Stage 2 — Evidence Researcher running...`);
             this.searchQueries = analysis.searchQueries;
-            const freshArticles = await this.detector.fetchAndStoreEvidence(analysis, 3);
-            this.agentInsights.evidenceResearcher = `Fetched ${freshArticles.length} articles for ${this.searchQueries.length} queries`;
+            this.agentInsights.claimAnalyst = `Queries: ${analysis.searchPlan.primaryQuery}`;
+            this.step(`✅ Queries: ${this.searchQueries.join(' | ')}`);
+            // Stage 2: Fetch + index (capped articles, soft-fail on embed timeout)
+            this.step(`📚 Stage 2 — Fetching news (${this.searchQueries.length} queries)...`);
+            const freshArticles = await this.detector.fetchAndStoreEvidence(analysis);
+            this.agentInsights.evidenceResearcher = `${freshArticles.length} articles fetched`;
             this.step(`✅ Evidence Researcher completed (${freshArticles.length} articles)`);
-            // Stage 3: Hybrid retrieval (semantic + keywords + recency)
-            this.step(`🔎 Stage 3 — Finding relevant evidence...`);
-            this.evidenceDocs = await this.detector.findRelevantEvidence(claim, 12, analysis, freshArticles);
+            // Stage 3: Relevance-ranked retrieval (minimal HF calls)
+            this.step(`🔎 Stage 3 — Ranking evidence...`);
+            this.evidenceDocs = await this.detector.findRelevantEvidence(claim, undefined, analysis, freshArticles);
             this.step(`✅ Retrieved ${this.evidenceDocs.length} relevant evidence documents`);
             // Stage 4: Fact checking
             this.step(`⚖️ Stage 4 — Fact Checker running...`);

@@ -1,13 +1,14 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.MisinformationDetector = void 0;
+exports.optimizeSearchQueries = exports.MisinformationDetector = void 0;
 require("dotenv/config");
 const qdrant_1 = require("@langchain/qdrant");
-const documents_1 = require("@langchain/core/documents");
 const serpapi_1 = require("serpapi");
 const js_client_rest_1 = require("@qdrant/js-client-rest");
 const embeddings_1 = require("./embeddings");
 const evidence_retrieval_1 = require("./evidence-retrieval");
+const query_optimizer_1 = require("./query-optimizer");
+const retrieval_pipeline_1 = require("./retrieval-pipeline");
 const groq_llm_1 = require("./groq-llm");
 // ==============================
 // CLASS: MisinformationDetector
@@ -163,11 +164,21 @@ class MisinformationDetector {
             if (documents.length === 0)
                 return;
             await this.vectorStore.addDocuments(documents);
-            console.log(`✅ Stored ${documents.length} articles (cap ${evidence_retrieval_1.MAX_ARTICLES_TO_INDEX}, ${articles.length} fetched)`);
+            console.log(`✅ Indexed ${documents.length} articles (max ${evidence_retrieval_1.MAX_ARTICLES_TO_INDEX})`);
         }
         catch (error) {
             console.error('❌ Error storing articles:', error);
             throw error;
+        }
+    }
+    /** Non-blocking index — verification continues if HuggingFace times out */
+    async storeNewsArticlesSafe(articles) {
+        try {
+            await this.storeNewsArticles(articles);
+            return true;
+        }
+        catch {
+            return false;
         }
     }
     // ==============================
@@ -244,41 +255,35 @@ class MisinformationDetector {
     // CLAIM ANALYSIS
     // ==============================
     async analyzeClaim(claim) {
+        const searchPlan = await (0, query_optimizer_1.optimizeSearchQueries)(claim);
         const prompt = `
-You must respond ONLY with a valid JSON object. Do not include explanations, text, or code fences.
-
-Analyze this claim for fact-checking:
+Respond ONLY with valid JSON. Analyze this claim for fact-checking (do NOT invent facts not in the claim).
 
 Claim: "${claim}"
 
 Return JSON:
 {
-  "extractedClaims": ["claim1", "claim2"],
-  "keywords": ["keyword1", "keyword2", "named entities"],
-  "context": "short context",
-  "searchQueries": [
-    "specific Google News query with names/dates",
-    "broader contextual query",
-    "query with fact check or verification"
-  ],
-  "specificity": "vague/specific"
+  "extractedClaims": ["sub-claim1", "sub-claim2"],
+  "keywords": ["terms from the claim only"],
+  "context": "one short sentence of topic context",
+  "specificity": "vague" or "specific"
 }`;
         try {
             const response = await (0, groq_llm_1.groqCompleteWithRetry)(prompt, {
-                maxTokens: 500,
+                maxTokens: 400,
                 temperature: 0.1,
                 requireJson: true,
             });
             const parsed = this.extractJsonFromResponse(response);
-            const searchQueries = Array.isArray(parsed.searchQueries)
-                ? parsed.searchQueries.filter((q) => typeof q === 'string' && q.trim())
-                : [];
             return {
                 claim,
                 extractedClaims: parsed.extractedClaims || [claim],
-                keywords: parsed.keywords || claim.split(' ').filter(w => w.length > 3),
+                keywords: parsed.keywords?.length > 0
+                    ? parsed.keywords
+                    : searchPlan.claimKeywords,
                 context: parsed.context || 'General claim verification',
-                searchQueries: searchQueries.length > 0 ? searchQueries : await this.generateSearchQueries(claim),
+                searchQueries: searchPlan.allQueries,
+                searchPlan,
             };
         }
         catch (error) {
@@ -286,142 +291,30 @@ Return JSON:
             return {
                 claim,
                 extractedClaims: [claim],
-                keywords: claim.split(' ').filter(w => w.length > 3).slice(0, 5),
+                keywords: searchPlan.claimKeywords,
                 context: 'General claim verification',
-                searchQueries: await this.generateSearchQueries(claim),
+                searchQueries: searchPlan.allQueries,
+                searchPlan,
             };
         }
     }
-    async generateSearchQueries(claim, context) {
-        const prompt = `Generate exactly 3 Google News search queries to verify this claim.
-
-Claim: "${claim}"
-${context ? `Context: ${context}` : ''}
-
-Rules:
-- Query 1: very specific (include names, places, dates from the claim if present)
-- Query 2: broader topic context
-- Query 3: include "fact check" or "verification"
-Return ONLY 3 lines, one query per line, no numbering or bullets.`;
-        try {
-            const response = await (0, groq_llm_1.groqCompleteWithRetry)(prompt, {
-                maxTokens: 200,
-                temperature: 0.2,
-                requireJson: false,
-                retries: 1,
-            });
-            const queries = response
-                .split('\n')
-                .map((q) => q.replace(/^[\d.\-*)\s]+/, '').trim())
-                .filter((q) => q.length > 8)
-                .slice(0, 3);
-            if (queries.length > 0)
-                return queries;
-        }
-        catch (error) {
-            console.warn('⚠️ Search query generation failed, using fallback:', error);
-        }
-        return [
-            claim,
-            `${claim.split(' ').slice(0, 8).join(' ')} news`,
-            `${claim.split(' ').slice(0, 8).join(' ')} fact check`,
-        ];
+    /** Groq-optimized search queries (≤15 words, no hallucinated entities) */
+    async generateSearchQueries(claim) {
+        const plan = await (0, query_optimizer_1.optimizeSearchQueries)(claim);
+        return plan.allQueries;
     }
-    async fetchAndStoreEvidence(analysis, maxQueries = 3) {
-        const queries = (analysis.searchQueries.length > 0
-            ? analysis.searchQueries
-            : await this.generateSearchQueries(analysis.claim, analysis.context)).slice(0, maxQueries);
-        const seenLinks = new Set();
-        const collected = [];
-        for (const query of queries) {
-            if (collected.length >= evidence_retrieval_1.MAX_ARTICLES_TO_INDEX)
-                break;
-            const articles = await this.fetchGoogleNewsSearch(query);
-            for (const article of articles) {
-                if (collected.length >= evidence_retrieval_1.MAX_ARTICLES_TO_INDEX)
-                    break;
-                const link = article.link?.toLowerCase().trim();
-                if (!link || seenLinks.has(link))
-                    continue;
-                seenLinks.add(link);
-                collected.push(article);
-            }
-            await new Promise((r) => setTimeout(r, 600));
-        }
-        const toStore = collected.slice(0, evidence_retrieval_1.MAX_ARTICLES_TO_INDEX);
-        if (toStore.length > 0) {
-            await this.storeNewsArticles(toStore);
-        }
-        return toStore;
+    async fetchAndStoreEvidence(analysis) {
+        const plan = analysis.searchPlan;
+        const articles = await (0, retrieval_pipeline_1.fetchNewsForPlan)(plan, (q) => this.fetchGoogleNewsSearch(q));
+        await (0, retrieval_pipeline_1.indexArticlesSafe)(articles, (a) => this.storeNewsArticlesSafe(a));
+        return articles;
     }
     // ==============================
     // EVIDENCE SEARCH
     // ==============================
-    async findRelevantEvidence(claim, k = 12, analysis, freshArticles = []) {
-        const queryContext = analysis ?? {
-            claim,
-            extractedClaims: [claim],
-            keywords: claim.split(' ').filter((w) => w.length > 3).slice(0, 8),
-            context: '',
-            searchQueries: [],
-        };
-        const keywords = (0, evidence_retrieval_1.extractKeywordTokens)(claim, queryContext.keywords);
-        const candidates = [];
-        for (const article of freshArticles) {
-            candidates.push({
-                doc: new documents_1.Document({
-                    pageContent: (0, evidence_retrieval_1.formatArticleForEmbedding)(article),
-                    metadata: {
-                        title: article.title,
-                        link: article.link,
-                        date: article.date,
-                        source: article.source,
-                        type: 'news_article',
-                        fresh: true,
-                    },
-                }),
-                semanticScore: 0.92,
-            });
-        }
-        if (this.vectorStore) {
-            try {
-                const retrievalQueries = (0, evidence_retrieval_1.buildRetrievalQueries)(claim, queryContext);
-                const fetchK = Math.max(k * 3, 24);
-                const mmrDocs = await this.vectorStore.maxMarginalRelevanceSearch(claim, {
-                    k: Math.min(k, 10),
-                    fetchK,
-                    lambda: 0.65,
-                });
-                for (const doc of mmrDocs) {
-                    candidates.push({ doc, semanticScore: 0.85 });
-                }
-                for (const query of retrievalQueries) {
-                    const scored = await this.vectorStore.similaritySearchWithScore(query, 8);
-                    for (const [doc, score] of scored) {
-                        candidates.push({ doc, semanticScore: score });
-                    }
-                }
-            }
-            catch (error) {
-                console.error('❌ Error finding evidence:', error);
-            }
-        }
-        else {
-            console.warn('⚠️ Vector store not initialized — using fresh articles only');
-        }
-        const merged = new Map();
-        for (const { doc, semanticScore } of candidates) {
-            const meta = doc.metadata;
-            const key = meta.link?.toLowerCase().trim() ||
-                `${meta.title ?? ''}::${doc.pageContent.slice(0, 80)}`;
-            const prev = merged.get(key);
-            if (!prev || semanticScore > prev.semanticScore) {
-                merged.set(key, { doc, semanticScore });
-            }
-        }
-        const ranked = (0, evidence_retrieval_1.rankEvidenceCandidates)(Array.from(merged.values()), keywords, { minCombinedScore: 0.38, limit: k });
-        console.log(`🔎 Evidence: ${ranked.length} docs after ranking (${candidates.length} candidates)`);
-        return ranked;
+    async findRelevantEvidence(claim, k = evidence_retrieval_1.MAX_EVIDENCE_RESULTS, analysis, freshArticles = []) {
+        const plan = analysis?.searchPlan ?? (await (0, query_optimizer_1.optimizeSearchQueries)(claim));
+        return (0, retrieval_pipeline_1.retrieveEvidence)(plan, this.vectorStore, freshArticles, k);
     }
     // ==============================
     // VERIFY CLAIM WITH EVIDENCE
@@ -518,9 +411,9 @@ Return JSON:
             console.log(`🔍 Starting verification for claim: "${claim}"`);
             const analysis = await this.analyzeClaim(claim);
             console.log('📰 Fetching targeted news for claim...');
-            const freshNews = await this.fetchAndStoreEvidence(analysis, 3);
+            const freshNews = await this.fetchAndStoreEvidence(analysis);
             console.log('🔎 Finding relevant evidence...');
-            const evidence = await this.findRelevantEvidence(claim, 12, analysis, freshNews);
+            const evidence = await this.findRelevantEvidence(claim, evidence_retrieval_1.MAX_EVIDENCE_RESULTS, analysis, freshNews);
             if (evidence.length === 0)
                 return {
                     isVerified: false,
@@ -575,4 +468,6 @@ async function main() {
 if (require.main === module) {
     main();
 }
+var query_optimizer_2 = require("./query-optimizer");
+Object.defineProperty(exports, "optimizeSearchQueries", { enumerable: true, get: function () { return query_optimizer_2.optimizeSearchQueries; } });
 //# sourceMappingURL=detector.js.map

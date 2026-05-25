@@ -11,7 +11,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import type { User } from "@supabase/supabase-js";
 
-const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:3000";
+import { API_URL } from "@/lib/api";
 
 const Index = () => {
   const navigate = useNavigate();

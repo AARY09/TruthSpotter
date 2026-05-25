@@ -11,12 +11,22 @@ console.log('🚀 Starting application...');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middleware
-app.use(cors({
-  origin: ["http://localhost:8080", "http://localhost:5173", "https://truthspotter.vercel.app"],
-  methods: ["GET", "POST"],
-  credentials: true,
-}));
+// Middleware — allow Vercel frontend + local dev
+const corsOrigins = [
+  'http://localhost:8080',
+  'http://localhost:5173',
+  'https://truth-spotter-ten.vercel.app',
+  'https://truthspotter.vercel.app',
+  ...(process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',').map((o) => o.trim()) : []),
+];
+
+app.use(
+  cors({
+    origin: corsOrigins,
+    methods: ['GET', 'POST', 'OPTIONS'],
+    credentials: true,
+  })
+);
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use('/', whatsappRouter);

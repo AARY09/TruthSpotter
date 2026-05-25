@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { Document } from '@langchain/core/documents';
+import { type OptimizedSearchPlan } from './query-optimizer';
 interface NewsArticle {
     title: string;
     snippet: string;
@@ -21,6 +22,7 @@ interface ClaimAnalysis {
     keywords: string[];
     context: string;
     searchQueries: string[];
+    searchPlan: OptimizedSearchPlan;
 }
 declare class MisinformationDetector {
     private embeddings;
@@ -34,6 +36,8 @@ declare class MisinformationDetector {
     initializeVectorStore(collectionName?: string): Promise<void>;
     fetchGoogleNewsSearch(query: string): Promise<NewsArticle[]>;
     storeNewsArticles(articles: NewsArticle[]): Promise<void>;
+    /** Non-blocking index — verification continues if HuggingFace times out */
+    storeNewsArticlesSafe(articles: NewsArticle[]): Promise<boolean>;
     runJsonTask(prompt: string, config?: {
         maxOutputTokens?: number;
         temperature?: number;
@@ -47,12 +51,14 @@ declare class MisinformationDetector {
     isVectorStoreInitialized(): boolean;
     extractJsonFromResponse(response: string): any;
     analyzeClaim(claim: string): Promise<ClaimAnalysis>;
-    generateSearchQueries(claim: string, context?: string): Promise<string[]>;
-    fetchAndStoreEvidence(analysis: ClaimAnalysis, maxQueries?: number): Promise<NewsArticle[]>;
+    /** Groq-optimized search queries (≤15 words, no hallucinated entities) */
+    generateSearchQueries(claim: string): Promise<string[]>;
+    fetchAndStoreEvidence(analysis: ClaimAnalysis): Promise<NewsArticle[]>;
     findRelevantEvidence(claim: string, k?: number, analysis?: ClaimAnalysis, freshArticles?: NewsArticle[]): Promise<Document[]>;
     verifyClaimWithEvidence(claim: string, evidence: Document[], analysis: ClaimAnalysis): Promise<VerificationResult>;
     updateNewsDatabase(topics: string[]): Promise<void>;
     verifyClaim(claim: string): Promise<VerificationResult>;
 }
-export { MisinformationDetector, VerificationResult, NewsArticle, ClaimAnalysis, };
+export { MisinformationDetector, VerificationResult, NewsArticle, ClaimAnalysis };
+export { optimizeSearchQueries } from './query-optimizer';
 //# sourceMappingURL=detector.d.ts.map

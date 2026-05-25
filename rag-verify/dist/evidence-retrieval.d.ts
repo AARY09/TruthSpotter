@@ -20,8 +20,12 @@ export interface RankedEvidence {
 }
 /** Max articles to fetch + embed per verification (override via MAX_ARTICLES env) */
 export declare const MAX_ARTICLES_TO_INDEX: number;
-/** Per Google News query — keeps 3 queries under the global cap */
+/** Google News search queries per claim (primary + optional fact-check) */
+export declare const MAX_SEARCH_QUERIES: number;
+/** Per-query SerpAPI result cap */
 export declare const MAX_ARTICLES_PER_NEWS_QUERY: number;
+/** Evidence documents passed to the fact-checker */
+export declare const MAX_EVIDENCE_RESULTS: number;
 /** SerpAPI often returns source as an object ({ name, icon }) instead of a string */
 export declare function toTextField(value: unknown): string;
 export declare function sanitizeNewsArticle(raw: Record<string, unknown>): NewsArticlePayload;
@@ -32,7 +36,8 @@ export declare function computeKeywordCoverage(keywords: string[], text: string)
 export declare function computeRecencyWeight(dateStr: string | undefined): number;
 export declare function normalizeLink(url: string | undefined): string | null;
 export declare function dedupeDocumentsByLink(docs: Document[]): Document[];
-export declare function buildRetrievalQueries(claim: string, analysis: EvidenceQueryContext): string[];
+/** Vector search uses optimized queries only (avoids many HF embed calls) */
+export declare function buildRetrievalQueries(_claim: string, analysis: EvidenceQueryContext): string[];
 export declare function rankEvidenceCandidates(candidates: Array<{
     doc: Document;
     semanticScore: number;

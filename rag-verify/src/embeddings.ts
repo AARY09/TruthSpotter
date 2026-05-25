@@ -35,13 +35,35 @@ function toFlatVector(result: (number | number[] | number[][])[]): number[] {
   return rows[0].map((_, i) => rows.reduce((sum, row) => sum + row[i], 0) / rows.length);
 }
 
+function isRetryableEmbedError(error: unknown): boolean {
+  const msg = error instanceof Error ? error.message : String(error);
+  const status = (error as { httpResponse?: { status?: number } })?.httpResponse?.status;
+  return status === 504 || status === 503 || status === 429 || /timeout|rate|503|504/i.test(msg);
+}
+
+async function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
 export async function generateEmbedding(text: string): Promise<number[]> {
   requireHuggingfaceApiKey();
-  const result = await hf.featureExtraction({
-    model: HF_EMBED_MODEL,
-    inputs: text,
-  });
-  return toFlatVector(result);
+  const input = text.trim().slice(0, 2000);
+  const maxAttempts = 3;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      const result = await hf.featureExtraction({
+        model: HF_EMBED_MODEL,
+        inputs: input,
+      });
+      return toFlatVector(result);
+    } catch (error) {
+      if (attempt >= maxAttempts - 1 || !isRetryableEmbedError(error)) throw error;
+      await sleep(600 * (attempt + 1));
+    }
+  }
+
+  throw new Error('Embedding failed after retries');
 }
 
 /** LangChain adapter so QdrantVectorStore can call generateEmbedding internally */
@@ -52,14 +74,9 @@ export class HuggingFaceEmbeddings extends Embeddings {
 
   async embedDocuments(documents: string[]): Promise<number[][]> {
     const results: number[][] = [];
-    const batchSize = 3;
-    for (let i = 0; i < documents.length; i += batchSize) {
-      const batch = documents.slice(i, i + batchSize);
-      const vectors = await Promise.all(batch.map((doc) => generateEmbedding(doc)));
-      results.push(...vectors);
-      if (i + batchSize < documents.length) {
-        await new Promise((r) => setTimeout(r, 250));
-      }
+    for (let i = 0; i < documents.length; i++) {
+      results.push(await generateEmbedding(documents[i]));
+      if (i < documents.length - 1) await sleep(350);
     }
     return results;
   }

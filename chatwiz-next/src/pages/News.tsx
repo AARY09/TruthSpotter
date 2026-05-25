@@ -3,7 +3,7 @@ import { useState, useEffect, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { Shield } from "lucide-react";
 
-const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:3000";
+import { API_URL } from "@/lib/api";
 const DEFAULT_IMAGE =
   "https://images.unsplash.com/photo-1507679799987-c73779587ccf?w=1200&q=80&auto=format&fit=crop";
 

@@ -186,19 +186,19 @@ Always mention the urgency level explicitly and highlight ambiguities that could
     try {
       const analysis = await this.detector.analyzeClaim(claim);
       const searchQueries = analysis.searchQueries;
-      this.step(`📌 Search queries: ${searchQueries.join(' | ')}`);
+      this.step(`📌 Optimized queries: ${searchQueries.join(' | ')}`);
 
-      const newsArticles = await this.detector.fetchAndStoreEvidence(analysis, 3);
+      const newsArticles = await this.detector.fetchAndStoreEvidence(analysis);
 
-      this.step(`🔎 Ranking evidence by relevance to claim...`);
+      this.step(`🔎 Ranking evidence by relevance...`);
       const curatedKbDocs = await this.detector.findRelevantEvidence(
         claim,
-        12,
+        undefined,
         analysis,
         newsArticles
       );
 
-      const curatedNewsArticles = newsArticles.slice(0, 8);
+      const curatedNewsArticles = newsArticles.slice(0, 6);
 
       const summary = `Evidence summary:
 - Search Queries: ${searchQueries.join(', ')}
