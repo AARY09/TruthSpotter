@@ -109,6 +109,7 @@ JSON:`;
       temperature: 0.1,
       requireJson: true,
       retries: 1,
+      operation: 'queryOptimizer',
     });
     const plan = parseOptimizerJson(response, claim);
     if (plan) {

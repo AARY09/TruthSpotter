@@ -3,6 +3,7 @@ import cors from 'cors';
 import { MisinformationDetector, VerificationResult } from './detector';
 import rateLimit from 'express-rate-limit';
 import { AgentOrchestrator } from './agent-orchestrator';
+import { getLifetimeUsage, getRecentTokenEvents } from './token-monitor';
 import whatsappRouter from "./routes/whatsapp"; // adjust path if needed
 
 
@@ -109,7 +110,8 @@ app.get('/', (req, res) => {
       'GET /verify-stream': 'Stream verification results (SSE)',
       'POST /update-news': 'Update news database with topics',
       'GET /health': 'Health check',
-      'GET /stats': 'Get system statistics'
+      'GET /stats': 'Get system statistics',
+      'GET /tokens': 'Get Groq + Hugging Face token usage'
     }
   });
 });
@@ -347,6 +349,27 @@ app.get('/news', async (req, res) => {
   } catch (error: any) {
     console.error('❌ Error in /news:', error?.message || error);
     return res.status(500).json({ success: false, error: 'Failed to fetch news' });
+  }
+});
+
+// Token usage endpoint
+app.get('/tokens', (req, res) => {
+  try {
+    const limit = Math.min(Number(req.query.limit) || 50, 200);
+    const lifetime = getLifetimeUsage();
+    const events = getRecentTokenEvents(limit);
+
+    res.json({
+      success: true,
+      data: {
+        lifetime,
+        recentEvents: events,
+        timestamp: new Date().toISOString(),
+      },
+    });
+  } catch (error) {
+    console.error('❌ Error getting token usage:', error);
+    res.status(500).json({ success: false, error: 'Failed to get token usage' });
   }
 });
 

@@ -280,13 +280,14 @@ class MisinformationDetector {
   /** Plain-text completion for routing / casual chat */
   async generateCompletion(
     prompt: string,
-    config?: { maxOutputTokens?: number; temperature?: number }
+    config?: { maxOutputTokens?: number; temperature?: number; operation?: string }
   ): Promise<string> {
     return groqCompleteWithRetry(prompt, {
       maxTokens: config?.maxOutputTokens ?? 500,
       temperature: config?.temperature ?? 0.1,
       retries: 1,
       requireJson: false,
+      operation: config?.operation ?? 'generateCompletion',
     });
   }
 
@@ -361,6 +362,7 @@ Return JSON:
         maxTokens: 400,
         temperature: 0.1,
         requireJson: true,
+        operation: 'claimAnalyst',
       });
       const parsed = this.extractJsonFromResponse(response);
 
@@ -461,6 +463,7 @@ Return JSON:
         maxTokens: 600,
         temperature: 0.1,
         requireJson: true,
+        operation: 'factChecker',
       });
       const parsed = this.extractJsonFromResponse(response);
 

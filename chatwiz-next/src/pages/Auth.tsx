@@ -67,10 +67,13 @@ const Auth = () => {
         });
 
         if (error) {
-          if (error.message.includes("Invalid login credentials")) {
-            toast.error("Invalid email or password");
+          console.error('[Auth] signInWithPassword error:', error.status, error.message, error);
+          if (error.message.includes("Invalid login credentials") || error.status === 400) {
+            toast.error(`Sign-in failed: ${error.message}`);
+          } else if (error.message.includes("Email not confirmed")) {
+            toast.error("Please confirm your email address before signing in.");
           } else {
-            toast.error(error.message);
+            toast.error(`Auth error (${error.status ?? 'unknown'}): ${error.message}`);
           }
         } else {
           toast.success("Welcome back!");
@@ -85,10 +88,11 @@ const Auth = () => {
         });
 
         if (error) {
+          console.error('[Auth] signUp error:', error.status, error.message, error);
           if (error.message.includes("already registered")) {
             toast.error("This email is already registered. Please sign in instead.");
           } else {
-            toast.error(error.message);
+            toast.error(`Sign-up error (${error.status ?? 'unknown'}): ${error.message}`);
           }
         } else {
           toast.success("Account created successfully!");

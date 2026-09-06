@@ -1,5 +1,6 @@
 import { HfInference } from '@huggingface/inference';
 import { Embeddings } from '@langchain/core/embeddings';
+import { recordHuggingFaceUsage } from './token-monitor';
 
 export const HF_EMBED_MODEL =
   process.env.HF_EMBED_MODEL ?? 'BAAI/bge-small-en-v1.5';
@@ -56,6 +57,7 @@ export async function generateEmbedding(text: string): Promise<number[]> {
         model: HF_EMBED_MODEL,
         inputs: input,
       });
+      recordHuggingFaceUsage({ operation: 'featureExtraction', text: input });
       return toFlatVector(result);
     } catch (error) {
       if (attempt >= maxAttempts - 1 || !isRetryableEmbedError(error)) throw error;

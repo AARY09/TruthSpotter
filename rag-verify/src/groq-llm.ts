@@ -1,6 +1,7 @@
 import { ChatGroq } from '@langchain/groq';
 import { HumanMessage } from '@langchain/core/messages';
 import { GROQ_CHAT_MODEL, requireGroqApiKey } from './groq-config';
+import { extractGroqTokenUsage, recordGroqUsage } from './token-monitor';
 
 export function createChatGroq(
   overrides?: Partial<ConstructorParameters<typeof ChatGroq>[0]>
@@ -16,7 +17,7 @@ export function createChatGroq(
 
 export async function groqComplete(
   prompt: string,
-  options?: { maxTokens?: number; temperature?: number }
+  options?: { maxTokens?: number; temperature?: number; operation?: string }
 ): Promise<string> {
   const llm = createChatGroq({
     temperature: options?.temperature ?? 0.1,
@@ -26,13 +27,26 @@ export async function groqComplete(
   const response = await llm.invoke([new HumanMessage(prompt)]);
   const content = response.content;
 
-  if (typeof content === 'string') return content;
-  if (Array.isArray(content)) {
-    return content
+  let text: string;
+  if (typeof content === 'string') text = content;
+  else if (Array.isArray(content)) {
+    text = content
       .map((part) => (typeof part === 'string' ? part : (part as { text?: string }).text ?? ''))
       .join('');
+  } else {
+    text = String(content ?? '');
   }
-  return String(content ?? '');
+
+  const usage = extractGroqTokenUsage(response);
+  recordGroqUsage({
+    operation: options?.operation ?? 'groqComplete',
+    promptTokens: usage.promptTokens,
+    completionTokens: usage.completionTokens,
+    promptText: prompt,
+    completionText: text,
+  });
+
+  return text;
 }
 
 export async function groqCompleteWithRetry(
@@ -42,6 +56,7 @@ export async function groqCompleteWithRetry(
     temperature?: number;
     retries?: number;
     requireJson?: boolean;
+    operation?: string;
   }
 ): Promise<string> {
   const retries = options?.retries ?? 2;

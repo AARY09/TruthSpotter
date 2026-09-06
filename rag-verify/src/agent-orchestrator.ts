@@ -1,5 +1,6 @@
 import { MisinformationDetector, NewsArticle } from './detector';
 import { Document } from '@langchain/core/documents';
+import { runWithTokenSession, type TokenUsageSnapshot } from './token-monitor';
 
 // ==============================
 // TYPES
@@ -20,6 +21,7 @@ export interface AgenticVerificationResult {
   };
   searchQueries: string[];
   evidenceSources: number;
+  tokenUsage?: TokenUsageSnapshot;
 }
 
 type UpdateCallback = (msg: string) => void;
@@ -251,32 +253,35 @@ export class AgentOrchestrator {
     this.searchQueries = [];
     this.evidenceDocs = [];
 
-    // Create timeout promise
+    const sessionId = this.context?.requestId ?? crypto.randomUUID();
+
     const timeoutPromise = new Promise<never>((_, reject) => {
       setTimeout(() => reject(new Error('Verification timeout')), this.timeoutMs);
     });
 
     try {
-      // Step 0: Route the query
-      const queryType = await this.routeQuery(claim);
-      
-      // Run with timeout based on query type
-      let resultPromise: Promise<AgenticVerificationResult>;
-      
-      if (queryType === 'casual') {
-        resultPromise = this.handleCasualQuery(claim);
-      } else {
-        resultPromise = this.runVerification(claim);
-      }
-      
-      const result = await Promise.race([resultPromise, timeoutPromise]);
-      
-      return result;
+      const { result, usage } = await runWithTokenSession(sessionId, async () => {
+        const queryType = await this.routeQuery(claim);
+
+        let resultPromise: Promise<AgenticVerificationResult>;
+        if (queryType === 'casual') {
+          resultPromise = this.handleCasualQuery(claim);
+        } else {
+          resultPromise = this.runVerification(claim);
+        }
+
+        return Promise.race([resultPromise, timeoutPromise]);
+      });
+
+      const withUsage = { ...result, tokenUsage: usage };
+      this.step(
+        `📊 Tokens — Groq ${usage.groq.totalTokens} (in ${usage.groq.promptTokens}/out ${usage.groq.completionTokens}, ${usage.groq.calls} calls) | HF ~${usage.huggingface.totalTokens} (${usage.huggingface.calls} embeds)`
+      );
+      return withUsage;
     } catch (error: any) {
       this.step(`❌ Error in agentic verification: ${error?.message || 'Unknown error'}`);
       console.error('❌ Agentic verification error:', error);
 
-      // Fallback result
       const mappedEvidence = this.mapEvidenceToNewsArticles(this.evidenceDocs);
       return {
         isVerified: false,
@@ -314,6 +319,7 @@ Respond with ONLY one word: either "CASUAL" or "VERIFICATION_REQUIRED"`;
         await this.detector.generateCompletion(classificationPrompt, {
           maxOutputTokens: 10,
           temperature: 0.1,
+          operation: 'queryRouter',
         })
       )
         .trim()
@@ -353,6 +359,7 @@ Provide a helpful response. Be concise but informative.`;
         await this.detector.generateCompletion(casualPrompt, {
           maxOutputTokens: 500,
           temperature: 0.7,
+          operation: 'casualAgent',
         })
       ).trim();
 
