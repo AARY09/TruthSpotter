@@ -6,6 +6,7 @@ exports.groqCompleteWithRetry = groqCompleteWithRetry;
 const groq_1 = require("@langchain/groq");
 const messages_1 = require("@langchain/core/messages");
 const groq_config_1 = require("./groq-config");
+const token_monitor_1 = require("./token-monitor");
 function createChatGroq(overrides) {
     return new groq_1.ChatGroq({
         apiKey: (0, groq_config_1.requireGroqApiKey)(),
@@ -22,14 +23,26 @@ async function groqComplete(prompt, options) {
     });
     const response = await llm.invoke([new messages_1.HumanMessage(prompt)]);
     const content = response.content;
+    let text;
     if (typeof content === 'string')
-        return content;
-    if (Array.isArray(content)) {
-        return content
+        text = content;
+    else if (Array.isArray(content)) {
+        text = content
             .map((part) => (typeof part === 'string' ? part : part.text ?? ''))
             .join('');
     }
-    return String(content ?? '');
+    else {
+        text = String(content ?? '');
+    }
+    const usage = (0, token_monitor_1.extractGroqTokenUsage)(response);
+    (0, token_monitor_1.recordGroqUsage)({
+        operation: options?.operation ?? 'groqComplete',
+        promptTokens: usage.promptTokens,
+        completionTokens: usage.completionTokens,
+        promptText: prompt,
+        completionText: text,
+    });
+    return text;
 }
 async function groqCompleteWithRetry(prompt, options) {
     const retries = options?.retries ?? 2;

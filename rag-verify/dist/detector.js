@@ -205,6 +205,7 @@ class MisinformationDetector {
             temperature: config?.temperature ?? 0.1,
             retries: 1,
             requireJson: false,
+            operation: config?.operation ?? 'generateCompletion',
         });
     }
     // ==============================
@@ -270,9 +271,10 @@ Return JSON:
 }`;
         try {
             const response = await (0, groq_llm_1.groqCompleteWithRetry)(prompt, {
-                maxTokens: 400,
+                maxTokens: 800,
                 temperature: 0.1,
                 requireJson: true,
+                operation: 'claimAnalyst',
             });
             const parsed = this.extractJsonFromResponse(response);
             return {
@@ -326,32 +328,35 @@ Return JSON:
         const prompt = `
 You must respond ONLY with a valid JSON object. Do not include explanations, text, or code fences.
 
-You are a fact-checker. Verify the following claim using the provided evidence.
+You are a professional fact-checker. Thoroughly evaluate the user's claim against the provided evidence articles.
 
 Claim: "${claim}"
 Extracted Sub-Claims: ${analysis.extractedClaims.join(', ')}
 
-Evidence (ranked by relevance to the claim; #1 is strongest match):
-${evidenceText}
+Evidence:
+${evidenceText || 'No direct news articles found.'}
 
-Guidelines:
-- Prefer evidence that directly addresses the claim's entities, dates, and assertions.
-- When sources conflict, favor recent credible reporting, but do not ignore strong older evidence that directly refutes or supports the claim.
-- Keep reasoning concise but precise so downstream systems can explain the recency trade-offs.
+Instructions:
+- isVerified: true if the evidence supports the claim; false if the evidence refutes the claim or if it is false/unsupported.
+- confidence: a number between 0 and 100 indicating your confidence in the verdict based on the evidence.
+- riskLevel: "LOW" (credible / true), "MEDIUM" (partially true / mixed / unverifiable), or "HIGH" (false / misleading / misinformation).
+- analysis: Detailed, clear multi-sentence explanation breaking down what the evidence says, the timeline, sources, and reasons for the verdict.
+- factCheckSummary: A clear, authoritative summary of the fact-check verdict for the reader.
 
-Return JSON:
+Return JSON format:
 {
-  "isVerified": true/false,
-  "confidence": 85,
-  "riskLevel": "LOW/MEDIUM/HIGH",
-  "analysis": "detailed reasoning",
-  "factCheckSummary": "public summary"
+  "isVerified": true,
+  "confidence": 90,
+  "riskLevel": "LOW",
+  "analysis": "...",
+  "factCheckSummary": "..."
 }`;
         try {
             const response = await (0, groq_llm_1.groqCompleteWithRetry)(prompt, {
-                maxTokens: 600,
+                maxTokens: 1500,
                 temperature: 0.1,
                 requireJson: true,
+                operation: 'factChecker',
             });
             const parsed = this.extractJsonFromResponse(response);
             const relevantArticles = evidence.map((doc) => {

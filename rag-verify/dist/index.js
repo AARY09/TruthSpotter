@@ -9,15 +9,23 @@ const cors_1 = __importDefault(require("cors"));
 const detector_1 = require("./detector");
 const express_rate_limit_1 = __importDefault(require("express-rate-limit"));
 const agent_orchestrator_1 = require("./agent-orchestrator");
+const token_monitor_1 = require("./token-monitor");
 const whatsapp_1 = __importDefault(require("./routes/whatsapp")); // adjust path if needed
 console.log('🚀 Starting application...');
 const app = (0, express_1.default)();
 exports.app = app;
 const PORT = process.env.PORT || 3000;
-// Middleware
+// Middleware — allow Vercel frontend + local dev
+const corsOrigins = [
+    'http://localhost:8080',
+    'http://localhost:5173',
+    'https://truth-spotter-ten.vercel.app',
+    'https://truthspotter.vercel.app',
+    ...(process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',').map((o) => o.trim()) : []),
+];
 app.use((0, cors_1.default)({
-    origin: ["http://localhost:8080", "http://localhost:5173", "https://truthspotter.vercel.app"],
-    methods: ["GET", "POST"],
+    origin: corsOrigins,
+    methods: ['GET', 'POST', 'OPTIONS'],
     credentials: true,
 }));
 app.use(express_1.default.json({ limit: '10mb' }));
@@ -87,7 +95,8 @@ app.get('/', (req, res) => {
             'GET /verify-stream': 'Stream verification results (SSE)',
             'POST /update-news': 'Update news database with topics',
             'GET /health': 'Health check',
-            'GET /stats': 'Get system statistics'
+            'GET /stats': 'Get system statistics',
+            'GET /tokens': 'Get Groq + Hugging Face token usage'
         }
     });
 });
@@ -295,6 +304,26 @@ app.get('/news', async (req, res) => {
     catch (error) {
         console.error('❌ Error in /news:', error?.message || error);
         return res.status(500).json({ success: false, error: 'Failed to fetch news' });
+    }
+});
+// Token usage endpoint
+app.get('/tokens', (req, res) => {
+    try {
+        const limit = Math.min(Number(req.query.limit) || 50, 200);
+        const lifetime = (0, token_monitor_1.getLifetimeUsage)();
+        const events = (0, token_monitor_1.getRecentTokenEvents)(limit);
+        res.json({
+            success: true,
+            data: {
+                lifetime,
+                recentEvents: events,
+                timestamp: new Date().toISOString(),
+            },
+        });
+    }
+    catch (error) {
+        console.error('❌ Error getting token usage:', error);
+        res.status(500).json({ success: false, error: 'Failed to get token usage' });
     }
 });
 // System stats endpoint

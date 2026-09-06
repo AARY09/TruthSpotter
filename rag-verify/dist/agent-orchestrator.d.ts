@@ -1,4 +1,5 @@
 import { MisinformationDetector, NewsArticle } from './detector';
+import { type TokenUsageSnapshot } from './token-monitor';
 export interface AgenticVerificationResult {
     isVerified: boolean;
     confidence: number;
@@ -14,6 +15,7 @@ export interface AgenticVerificationResult {
     };
     searchQueries: string[];
     evidenceSources: number;
+    tokenUsage?: TokenUsageSnapshot;
 }
 type UpdateCallback = (msg: string) => void;
 export interface VerificationContext {

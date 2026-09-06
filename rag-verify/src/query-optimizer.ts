@@ -56,14 +56,26 @@ function fallbackPlan(claim: string): OptimizedSearchPlan {
 
 function parseOptimizerJson(raw: string, claim: string): OptimizedSearchPlan | null {
   try {
-    const parsed = JSON.parse(raw);
+    let clean = raw.trim();
+    const jsonMatch = clean.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+    if (jsonMatch) {
+      clean = jsonMatch[1].trim();
+    } else {
+      const s = clean.indexOf('{');
+      const e = clean.lastIndexOf('}');
+      if (s !== -1 && e > s) {
+        clean = clean.substring(s, e + 1);
+      }
+    }
+
+    const parsed = JSON.parse(clean);
     const primary = enforceQueryWordLimit(
       typeof parsed.primaryQuery === 'string' ? parsed.primaryQuery : ''
     );
     if (!primary || primary.length < 4) return null;
 
     const secondary = (Array.isArray(parsed.secondaryQueries) ? parsed.secondaryQueries : [])
-      .filter((q: unknown) => typeof q === 'string' && q.trim().length > 4)
+      .filter((q: unknown) => typeof q === 'string' && (q as string).trim().length > 4)
       .map((q: string) => enforceQueryWordLimit(q))
       .filter((q: string) => q !== primary)
       .slice(0, 1);
@@ -105,10 +117,10 @@ JSON:`;
 
   try {
     const response = await groqCompleteWithRetry(prompt, {
-      maxTokens: 200,
+      maxTokens: 500,
       temperature: 0.1,
       requireJson: true,
-      retries: 1,
+      retries: 2,
       operation: 'queryOptimizer',
     });
     const plan = parseOptimizerJson(response, claim);

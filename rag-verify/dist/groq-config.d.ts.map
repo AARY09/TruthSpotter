@@ -1,1 +1,1 @@
-{"version":3,"file":"groq-config.d.ts","sourceRoot":"","sources":["../src/groq-config.ts"],"names":[],"mappings":"AAAA,eAAO,MAAM,YAAY,oBAA2B,CAAC;AAErD,eAAO,MAAM,eAAe,QAC8B,CAAC;AAE3D,wBAAgB,iBAAiB,IAAI,MAAM,CAK1C"}
+{"version":3,"file":"groq-config.d.ts","sourceRoot":"","sources":["../src/groq-config.ts"],"names":[],"mappings":"AAAA,eAAO,MAAM,YAAY,oBAA2B,CAAC;AAErD,eAAO,MAAM,eAAe,QAC0B,CAAC;AAEvD,wBAAgB,iBAAiB,IAAI,MAAM,CAK1C"}

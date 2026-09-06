@@ -5,6 +5,7 @@ exports.requireHuggingfaceApiKey = requireHuggingfaceApiKey;
 exports.generateEmbedding = generateEmbedding;
 const inference_1 = require("@huggingface/inference");
 const embeddings_1 = require("@langchain/core/embeddings");
+const token_monitor_1 = require("./token-monitor");
 exports.HF_EMBED_MODEL = process.env.HF_EMBED_MODEL ?? 'BAAI/bge-small-en-v1.5';
 /** bge-small-en-v1.5 and all-MiniLM-L6-v2 use 384 dimensions */
 exports.HF_EMBEDDING_DIMENSION = 384;
@@ -48,6 +49,7 @@ async function generateEmbedding(text) {
                 model: exports.HF_EMBED_MODEL,
                 inputs: input,
             });
+            (0, token_monitor_1.recordHuggingFaceUsage)({ operation: 'featureExtraction', text: input });
             return toFlatVector(result);
         }
         catch (error) {

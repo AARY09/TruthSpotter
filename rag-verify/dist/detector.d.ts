@@ -46,6 +46,7 @@ declare class MisinformationDetector {
     generateCompletion(prompt: string, config?: {
         maxOutputTokens?: number;
         temperature?: number;
+        operation?: string;
     }): Promise<string>;
     getEmbeddingDimension(): number;
     isVectorStoreInitialized(): boolean;

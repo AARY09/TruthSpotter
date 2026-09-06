@@ -3,11 +3,13 @@ export declare function createChatGroq(overrides?: Partial<ConstructorParameters
 export declare function groqComplete(prompt: string, options?: {
     maxTokens?: number;
     temperature?: number;
+    operation?: string;
 }): Promise<string>;
 export declare function groqCompleteWithRetry(prompt: string, options?: {
     maxTokens?: number;
     temperature?: number;
     retries?: number;
     requireJson?: boolean;
+    operation?: string;
 }): Promise<string>;
 //# sourceMappingURL=groq-llm.d.ts.map

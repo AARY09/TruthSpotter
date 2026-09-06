@@ -37,7 +37,19 @@ function fallbackPlan(claim) {
 }
 function parseOptimizerJson(raw, claim) {
     try {
-        const parsed = JSON.parse(raw);
+        let clean = raw.trim();
+        const jsonMatch = clean.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+        if (jsonMatch) {
+            clean = jsonMatch[1].trim();
+        }
+        else {
+            const s = clean.indexOf('{');
+            const e = clean.lastIndexOf('}');
+            if (s !== -1 && e > s) {
+                clean = clean.substring(s, e + 1);
+            }
+        }
+        const parsed = JSON.parse(clean);
         const primary = enforceQueryWordLimit(typeof parsed.primaryQuery === 'string' ? parsed.primaryQuery : '');
         if (!primary || primary.length < 4)
             return null;
@@ -82,10 +94,11 @@ Example output: {"primaryQuery":"Recent Delhi bomb blast latest news","secondary
 JSON:`;
     try {
         const response = await (0, groq_llm_1.groqCompleteWithRetry)(prompt, {
-            maxTokens: 200,
+            maxTokens: 500,
             temperature: 0.1,
             requireJson: true,
-            retries: 1,
+            retries: 2,
+            operation: 'queryOptimizer',
         });
         const plan = parseOptimizerJson(response, claim);
         if (plan) {
