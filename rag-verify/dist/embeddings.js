@@ -1,64 +1,65 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.HuggingFaceEmbeddings = exports.HF_EMBEDDING_DIMENSION = exports.HF_EMBED_MODEL = void 0;
 exports.requireHuggingfaceApiKey = requireHuggingfaceApiKey;
 exports.generateEmbedding = generateEmbedding;
-const inference_1 = require("@huggingface/inference");
 const embeddings_1 = require("@langchain/core/embeddings");
 const token_monitor_1 = require("./token-monitor");
-exports.HF_EMBED_MODEL = process.env.HF_EMBED_MODEL ?? 'BAAI/bge-small-en-v1.5';
-/** bge-small-en-v1.5 and all-MiniLM-L6-v2 use 384 dimensions */
+exports.HF_EMBED_MODEL = process.env.HF_EMBED_MODEL ?? 'Xenova/all-MiniLM-L6-v2';
+/** all-MiniLM-L6-v2 and bge-small-en-v1.5 use 384 dimensions */
 exports.HF_EMBEDDING_DIMENSION = 384;
-const hf = new inference_1.HfInference(process.env.HUGGINGFACE_API_KEY);
 function requireHuggingfaceApiKey() {
-    const key = process.env.HUGGINGFACE_API_KEY;
-    if (!key) {
-        throw new Error('HUGGINGFACE_API_KEY is required');
-    }
-    return key;
+    return process.env.HUGGINGFACE_API_KEY || 'local';
 }
-function toFlatVector(result) {
-    if (result.length === 0) {
-        throw new Error('Empty embedding response from Hugging Face');
+let extractorPromise = null;
+async function getExtractor() {
+    if (!extractorPromise) {
+        extractorPromise = (async () => {
+            const { pipeline } = await Promise.resolve().then(() => __importStar(require('@xenova/transformers')));
+            return pipeline('feature-extraction', exports.HF_EMBED_MODEL);
+        })();
     }
-    if (typeof result[0] === 'number') {
-        return result;
-    }
-    const rows = result;
-    if (rows.length === 1) {
-        return rows[0];
-    }
-    const dim = rows[0].length;
-    return rows[0].map((_, i) => rows.reduce((sum, row) => sum + row[i], 0) / rows.length);
-}
-function isRetryableEmbedError(error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    const status = error?.httpResponse?.status;
-    return status === 504 || status === 503 || status === 429 || /timeout|rate|503|504/i.test(msg);
-}
-async function sleep(ms) {
-    return new Promise((r) => setTimeout(r, ms));
+    return extractorPromise;
 }
 async function generateEmbedding(text) {
-    requireHuggingfaceApiKey();
     const input = text.trim().slice(0, 2000);
-    const maxAttempts = 3;
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-        try {
-            const result = await hf.featureExtraction({
-                model: exports.HF_EMBED_MODEL,
-                inputs: input,
-            });
-            (0, token_monitor_1.recordHuggingFaceUsage)({ operation: 'featureExtraction', text: input });
-            return toFlatVector(result);
-        }
-        catch (error) {
-            if (attempt >= maxAttempts - 1 || !isRetryableEmbedError(error))
-                throw error;
-            await sleep(600 * (attempt + 1));
-        }
-    }
-    throw new Error('Embedding failed after retries');
+    const extractor = await getExtractor();
+    const output = await extractor(input, { pooling: 'mean', normalize: true });
+    (0, token_monitor_1.recordHuggingFaceUsage)({ operation: 'featureExtraction', text: input });
+    return Array.from(output.data);
 }
 /** LangChain adapter so QdrantVectorStore can call generateEmbedding internally */
 class HuggingFaceEmbeddings extends embeddings_1.Embeddings {
@@ -67,10 +68,8 @@ class HuggingFaceEmbeddings extends embeddings_1.Embeddings {
     }
     async embedDocuments(documents) {
         const results = [];
-        for (let i = 0; i < documents.length; i++) {
-            results.push(await generateEmbedding(documents[i]));
-            if (i < documents.length - 1)
-                await sleep(350);
+        for (const doc of documents) {
+            results.push(await generateEmbedding(doc));
         }
         return results;
     }

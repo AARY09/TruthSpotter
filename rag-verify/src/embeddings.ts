@@ -1,71 +1,34 @@
-import { HfInference } from '@huggingface/inference';
 import { Embeddings } from '@langchain/core/embeddings';
 import { recordHuggingFaceUsage } from './token-monitor';
 
 export const HF_EMBED_MODEL =
-  process.env.HF_EMBED_MODEL ?? 'BAAI/bge-small-en-v1.5';
+  process.env.HF_EMBED_MODEL ?? 'Xenova/all-MiniLM-L6-v2';
 
-/** bge-small-en-v1.5 and all-MiniLM-L6-v2 use 384 dimensions */
+/** all-MiniLM-L6-v2 and bge-small-en-v1.5 use 384 dimensions */
 export const HF_EMBEDDING_DIMENSION = 384;
 
-const hf = new HfInference(process.env.HUGGINGFACE_API_KEY);
-
 export function requireHuggingfaceApiKey(): string {
-  const key = process.env.HUGGINGFACE_API_KEY;
-  if (!key) {
-    throw new Error('HUGGINGFACE_API_KEY is required');
-  }
-  return key;
+  return process.env.HUGGINGFACE_API_KEY || 'local';
 }
 
-function toFlatVector(result: (number | number[] | number[][])[]): number[] {
-  if (result.length === 0) {
-    throw new Error('Empty embedding response from Hugging Face');
+let extractorPromise: Promise<any> | null = null;
+
+async function getExtractor() {
+  if (!extractorPromise) {
+    extractorPromise = (async () => {
+      const { pipeline } = await import('@xenova/transformers');
+      return pipeline('feature-extraction', HF_EMBED_MODEL);
+    })();
   }
-
-  if (typeof result[0] === 'number') {
-    return result as number[];
-  }
-
-  const rows = result as number[][];
-  if (rows.length === 1) {
-    return rows[0];
-  }
-
-  const dim = rows[0].length;
-  return rows[0].map((_, i) => rows.reduce((sum, row) => sum + row[i], 0) / rows.length);
-}
-
-function isRetryableEmbedError(error: unknown): boolean {
-  const msg = error instanceof Error ? error.message : String(error);
-  const status = (error as { httpResponse?: { status?: number } })?.httpResponse?.status;
-  return status === 504 || status === 503 || status === 429 || /timeout|rate|503|504/i.test(msg);
-}
-
-async function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
+  return extractorPromise;
 }
 
 export async function generateEmbedding(text: string): Promise<number[]> {
-  requireHuggingfaceApiKey();
   const input = text.trim().slice(0, 2000);
-  const maxAttempts = 3;
-
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    try {
-      const result = await hf.featureExtraction({
-        model: HF_EMBED_MODEL,
-        inputs: input,
-      });
-      recordHuggingFaceUsage({ operation: 'featureExtraction', text: input });
-      return toFlatVector(result);
-    } catch (error) {
-      if (attempt >= maxAttempts - 1 || !isRetryableEmbedError(error)) throw error;
-      await sleep(600 * (attempt + 1));
-    }
-  }
-
-  throw new Error('Embedding failed after retries');
+  const extractor = await getExtractor();
+  const output = await extractor(input, { pooling: 'mean', normalize: true });
+  recordHuggingFaceUsage({ operation: 'featureExtraction', text: input });
+  return Array.from(output.data);
 }
 
 /** LangChain adapter so QdrantVectorStore can call generateEmbedding internally */
@@ -76,9 +39,8 @@ export class HuggingFaceEmbeddings extends Embeddings {
 
   async embedDocuments(documents: string[]): Promise<number[][]> {
     const results: number[][] = [];
-    for (let i = 0; i < documents.length; i++) {
-      results.push(await generateEmbedding(documents[i]));
-      if (i < documents.length - 1) await sleep(350);
+    for (const doc of documents) {
+      results.push(await generateEmbedding(doc));
     }
     return results;
   }

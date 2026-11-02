@@ -1,5 +1,6 @@
 import { MisinformationDetector, NewsArticle } from './detector';
 import { AgentOrchestrator, AgenticVerificationResult } from './agent-orchestrator';
+import { redisService } from './redis-client';
 
 // ==============================
 // TYPES
@@ -148,8 +149,9 @@ export class RumorWatcher {
    * Processes a single article: extracts claims and verifies them
    */
   async processArticle(article: NewsArticle): Promise<RumorWatcherResult> {
-    // Skip if already processed
-    if (this.processedUrls.has(article.link)) {
+    // Skip if already processed (check both memory and Redis)
+    const isProcessed = this.processedUrls.has(article.link) || await redisService.isUrlProcessed(article.link);
+    if (isProcessed) {
       this.log(`⏭️ Skipping already processed article: ${article.title}`);
       return {
         article,
@@ -180,8 +182,9 @@ export class RumorWatcher {
       }
     }
 
-    // Mark as processed
+    // Mark as processed in local memory and Redis
     this.processedUrls.add(article.link);
+    await redisService.markUrlProcessed(article.link);
 
     return {
       article,
@@ -292,9 +295,10 @@ export class RumorWatcher {
   /**
    * Clears the cache of processed URLs (useful for testing or reset)
    */
-  clearProcessedCache(): void {
+  async clearProcessedCache(): Promise<void> {
     this.processedUrls.clear();
-    this.log('🗑️ Cleared processed URLs cache');
+    await redisService.clearProcessedUrls();
+    this.log('🗑️ Cleared processed URLs cache (memory and Redis)');
   }
 
   // ==============================
@@ -302,7 +306,7 @@ export class RumorWatcher {
   // ==============================
 
   /**
-   * Returns the number of articles already processed
+   * Returns the number of articles already processed in this instance
    */
   getProcessedCount(): number {
     return this.processedUrls.size;

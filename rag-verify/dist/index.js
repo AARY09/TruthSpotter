@@ -8,8 +8,10 @@ const express_1 = __importDefault(require("express"));
 const cors_1 = __importDefault(require("cors"));
 const detector_1 = require("./detector");
 const express_rate_limit_1 = __importDefault(require("express-rate-limit"));
+const rate_limit_redis_1 = require("rate-limit-redis");
 const agent_orchestrator_1 = require("./agent-orchestrator");
 const token_monitor_1 = require("./token-monitor");
+const redis_client_1 = require("./redis-client");
 const whatsapp_1 = __importDefault(require("./routes/whatsapp")); // adjust path if needed
 console.log('🚀 Starting application...');
 const app = (0, express_1.default)();
@@ -32,18 +34,26 @@ app.use(express_1.default.json({ limit: '10mb' }));
 app.use(express_1.default.urlencoded({ extended: true }));
 app.use('/', whatsapp_1.default);
 console.log('✅ Middleware configured');
-// Rate limiting
-const limiter = (0, express_rate_limit_1.default)({
-    windowMs: 15 * 60 * 1000,
-    max: 100,
-    message: 'Too many requests from this IP, please try again later.'
-});
+// Rate limiting with Redis store if available
+const createRateLimiter = (windowMs, max, message, prefix) => {
+    const client = redis_client_1.redisService.getClient();
+    return (0, express_rate_limit_1.default)({
+        windowMs,
+        max,
+        message,
+        standardHeaders: true,
+        legacyHeaders: false,
+        store: client
+            ? new rate_limit_redis_1.RedisStore({
+                sendCommand: (...args) => client.call(...args),
+                prefix: `truthspotter:rl:${prefix}:`,
+            })
+            : undefined,
+    });
+};
+const limiter = createRateLimiter(15 * 60 * 1000, 100, 'Too many requests from this IP, please try again later.', 'general');
 app.use(limiter);
-const verifyLimiter = (0, express_rate_limit_1.default)({
-    windowMs: 5 * 60 * 1000,
-    max: 10,
-    message: 'Too many verification requests, please try again later.'
-});
+const verifyLimiter = createRateLimiter(5 * 60 * 1000, 10, 'Too many verification requests, please try again later.', 'verify');
 console.log('✅ Rate limiting configured');
 // Initialize detector
 let detector;
@@ -76,26 +86,32 @@ function checkInitialized(req, res, next) {
 }
 // Routes
 // Health check (works even during initialization)
-app.get('/health', (req, res) => {
+app.get('/health', async (req, res) => {
+    const redisHealth = await redis_client_1.redisService.getHealth();
     res.json({
         status: isInitialized ? 'healthy' : 'initializing',
         timestamp: new Date().toISOString(),
-        service: 'misinformation-detector-api'
+        service: 'misinformation-detector-api',
+        redis: redisHealth
     });
 });
 // Get API info
-app.get('/', (req, res) => {
+app.get('/', async (req, res) => {
+    const redisHealth = await redis_client_1.redisService.getHealth();
     res.json({
         name: 'Misinformation Detection API',
         version: '1.0.0',
         status: isInitialized ? 'ready' : 'initializing',
+        redis: redisHealth.status,
         endpoints: {
-            'POST /verify-claim': 'Verify a claim against news sources',
-            'POST /verify-claim-agentic': 'Verify using agentic approach',
+            'POST /verify-claim': 'Verify a claim against news sources (Redis cached)',
+            'POST /verify-claim-agentic': 'Verify using agentic approach (Redis cached)',
             'GET /verify-stream': 'Stream verification results (SSE)',
             'POST /update-news': 'Update news database with topics',
-            'GET /health': 'Health check',
-            'GET /stats': 'Get system statistics',
+            'POST /cache/clear': 'Clear Redis / memory verification and rumor caches',
+            'GET /news': 'Fetch latest curated news items',
+            'GET /health': 'Health check with Redis status',
+            'GET /stats': 'Get system and Redis statistics',
             'GET /tokens': 'Get Groq + Hugging Face token usage'
         }
     });
@@ -116,19 +132,41 @@ app.post('/verify-claim', checkInitialized, verifyLimiter, async (req, res) => {
                 message: 'Claim must be less than 1000 characters'
             });
         }
-        console.log(`🔍 API: Verifying claim: "${claim.substring(0, 100)}..."`);
+        const trimmedClaim = claim.trim();
         const startTime = Date.now();
-        const result = await detector.verifyClaim(claim.trim());
+        // Check Redis / in-memory cache first
+        const cachedResult = await redis_client_1.redisService.getCachedVerification(trimmedClaim, 'standard');
+        if (cachedResult) {
+            console.log(`⚡ Cache HIT for claim: "${trimmedClaim.substring(0, 80)}..."`);
+            return res.json({
+                success: true,
+                data: {
+                    claim: trimmedClaim,
+                    verification: cachedResult,
+                    metadata: {
+                        processingTimeMs: Date.now() - startTime,
+                        timestamp: new Date().toISOString(),
+                        evidenceCount: cachedResult.evidence?.length || 0,
+                        cached: true,
+                    }
+                }
+            });
+        }
+        console.log(`🔍 API: Verifying claim (Cache MISS): "${trimmedClaim.substring(0, 100)}..."`);
+        const result = await detector.verifyClaim(trimmedClaim);
         const processingTime = Date.now() - startTime;
+        // Cache the result in Redis
+        await redis_client_1.redisService.setCachedVerification(trimmedClaim, result, 'standard');
         return res.json({
             success: true,
             data: {
-                claim: claim.trim(),
+                claim: trimmedClaim,
                 verification: result,
                 metadata: {
                     processingTimeMs: processingTime,
                     timestamp: new Date().toISOString(),
-                    evidenceCount: result.evidence.length
+                    evidenceCount: result.evidence.length,
+                    cached: false,
                 }
             }
         });
@@ -196,7 +234,28 @@ app.post('/verify-claim-agentic', checkInitialized, verifyLimiter, async (req, r
                 message: 'Claim must be less than 1000 characters'
             });
         }
-        console.log(`🤖 API: Agentic verification for claim: "${claim.substring(0, 100)}..."`);
+        const trimmedClaim = claim.trim();
+        const startTime = Date.now();
+        // Check Redis / in-memory cache first
+        const cachedResult = await redis_client_1.redisService.getCachedVerification(trimmedClaim, 'agentic');
+        if (cachedResult) {
+            console.log(`⚡ Agentic Cache HIT for claim: "${trimmedClaim.substring(0, 80)}..."`);
+            return res.json({
+                success: true,
+                data: {
+                    claim: trimmedClaim,
+                    verification: cachedResult,
+                    metadata: {
+                        processingTimeMs: Date.now() - startTime,
+                        timestamp: new Date().toISOString(),
+                        evidenceCount: cachedResult.evidence?.length || 0,
+                        verificationType: 'agentic-rag',
+                        cached: true,
+                    }
+                }
+            });
+        }
+        console.log(`🤖 API: Agentic verification (Cache MISS) for claim: "${trimmedClaim.substring(0, 100)}..."`);
         // Create per-request context (each request gets its own isolated context)
         const context = {
             userId: req.user?.id || req.headers['x-user-id'] || undefined,
@@ -205,20 +264,22 @@ app.post('/verify-claim-agentic', checkInitialized, verifyLimiter, async (req, r
             requestId: crypto.randomUUID(),
             timestamp: new Date().toISOString(),
         };
-        const startTime = Date.now();
         const orchestrator = new agent_orchestrator_1.AgentOrchestrator(detector, undefined, context);
-        const result = await orchestrator.verifyClaimAgentic(claim.trim(), context);
+        const result = await orchestrator.verifyClaimAgentic(trimmedClaim, context);
         const processingTime = Date.now() - startTime;
+        // Cache the agentic verification result
+        await redis_client_1.redisService.setCachedVerification(trimmedClaim, result, 'agentic');
         return res.json({
             success: true,
             data: {
-                claim: claim.trim(),
+                claim: trimmedClaim,
                 verification: result,
                 metadata: {
                     processingTimeMs: processingTime,
                     timestamp: new Date().toISOString(),
-                    evidenceCount: result.evidence.length,
-                    verificationType: 'agentic-rag'
+                    evidenceCount: result.evidence?.length || 0,
+                    verificationType: 'agentic-rag',
+                    cached: false,
                 }
             }
         });
@@ -326,13 +387,34 @@ app.get('/tokens', (req, res) => {
         res.status(500).json({ success: false, error: 'Failed to get token usage' });
     }
 });
+// Clear verification and rumor cache
+app.post('/cache/clear', async (req, res) => {
+    try {
+        const clearedCount = await redis_client_1.redisService.clearCache();
+        return res.json({
+            success: true,
+            message: `TruthSpotter cache cleared successfully (${clearedCount} entries removed)`,
+            timestamp: new Date().toISOString()
+        });
+    }
+    catch (error) {
+        console.error('❌ Error clearing cache:', error);
+        return res.status(500).json({
+            success: false,
+            error: 'Cache clear failed',
+            message: error?.message || 'Failed to clear cache'
+        });
+    }
+});
 // System stats endpoint
 app.get('/stats', checkInitialized, async (req, res) => {
     try {
+        const redisHealth = await redis_client_1.redisService.getHealth();
         const stats = {
             status: 'operational',
             uptime: process.uptime(),
             memoryUsage: process.memoryUsage(),
+            redis: redisHealth,
             timestamp: new Date().toISOString(),
             version: '1.0.0'
         };

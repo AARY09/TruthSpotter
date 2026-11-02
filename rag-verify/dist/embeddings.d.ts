@@ -1,6 +1,6 @@
 import { Embeddings } from '@langchain/core/embeddings';
 export declare const HF_EMBED_MODEL: string;
-/** bge-small-en-v1.5 and all-MiniLM-L6-v2 use 384 dimensions */
+/** all-MiniLM-L6-v2 and bge-small-en-v1.5 use 384 dimensions */
 export declare const HF_EMBEDDING_DIMENSION = 384;
 export declare function requireHuggingfaceApiKey(): string;
 export declare function generateEmbedding(text: string): Promise<number[]>;

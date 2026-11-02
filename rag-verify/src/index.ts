@@ -2,8 +2,10 @@ import express from 'express';
 import cors from 'cors';
 import { MisinformationDetector, VerificationResult } from './detector';
 import rateLimit from 'express-rate-limit';
+import { RedisStore } from 'rate-limit-redis';
 import { AgentOrchestrator } from './agent-orchestrator';
 import { getLifetimeUsage, getRecentTokenEvents } from './token-monitor';
+import { redisService } from './redis-client';
 import whatsappRouter from "./routes/whatsapp"; // adjust path if needed
 
 
@@ -34,19 +36,38 @@ app.use('/', whatsappRouter);
 
 console.log('✅ Middleware configured');
 
-// Rate limiting
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 100,
-  message: 'Too many requests from this IP, please try again later.'
-});
+// Rate limiting with Redis store if available
+const createRateLimiter = (windowMs: number, max: number, message: string, prefix: string) => {
+  const client = redisService.getClient();
+  return rateLimit({
+    windowMs,
+    max,
+    message,
+    standardHeaders: true,
+    legacyHeaders: false,
+    store: client
+      ? new RedisStore({
+          sendCommand: (...args: string[]) => (client as any).call(...args),
+          prefix: `truthspotter:rl:${prefix}:`,
+        })
+      : undefined,
+  });
+};
+
+const limiter = createRateLimiter(
+  15 * 60 * 1000,
+  100,
+  'Too many requests from this IP, please try again later.',
+  'general'
+);
 app.use(limiter);
 
-const verifyLimiter = rateLimit({
-  windowMs: 5 * 60 * 1000,
-  max: 10,
-  message: 'Too many verification requests, please try again later.'
-});
+const verifyLimiter = createRateLimiter(
+  5 * 60 * 1000,
+  10,
+  'Too many verification requests, please try again later.',
+  'verify'
+);
 
 console.log('✅ Rate limiting configured');
 
@@ -90,27 +111,33 @@ function checkInitialized(
 // Routes
 
 // Health check (works even during initialization)
-app.get('/health', (req, res) => {
+app.get('/health', async (req, res) => {
+  const redisHealth = await redisService.getHealth();
   res.json({ 
     status: isInitialized ? 'healthy' : 'initializing', 
     timestamp: new Date().toISOString(),
-    service: 'misinformation-detector-api'
+    service: 'misinformation-detector-api',
+    redis: redisHealth
   });
 });
 
 // Get API info
-app.get('/', (req, res) => {
+app.get('/', async (req, res) => {
+  const redisHealth = await redisService.getHealth();
   res.json({
     name: 'Misinformation Detection API',
     version: '1.0.0',
     status: isInitialized ? 'ready' : 'initializing',
+    redis: redisHealth.status,
     endpoints: {
-      'POST /verify-claim': 'Verify a claim against news sources',
-      'POST /verify-claim-agentic': 'Verify using agentic approach',
+      'POST /verify-claim': 'Verify a claim against news sources (Redis cached)',
+      'POST /verify-claim-agentic': 'Verify using agentic approach (Redis cached)',
       'GET /verify-stream': 'Stream verification results (SSE)',
       'POST /update-news': 'Update news database with topics',
-      'GET /health': 'Health check',
-      'GET /stats': 'Get system statistics',
+      'POST /cache/clear': 'Clear Redis / memory verification and rumor caches',
+      'GET /news': 'Fetch latest curated news items',
+      'GET /health': 'Health check with Redis status',
+      'GET /stats': 'Get system and Redis statistics',
       'GET /tokens': 'Get Groq + Hugging Face token usage'
     }
   });
@@ -135,21 +162,46 @@ app.post('/verify-claim', checkInitialized, verifyLimiter, async (req, res) => {
       });
     }
 
-    console.log(`🔍 API: Verifying claim: "${claim.substring(0, 100)}..."`);
-
+    const trimmedClaim = claim.trim();
     const startTime = Date.now();
-    const result: VerificationResult = await detector.verifyClaim(claim.trim());
+
+    // Check Redis / in-memory cache first
+    const cachedResult = await redisService.getCachedVerification<VerificationResult>(trimmedClaim, 'standard');
+    if (cachedResult) {
+      console.log(`⚡ Cache HIT for claim: "${trimmedClaim.substring(0, 80)}..."`);
+      return res.json({
+        success: true,
+        data: {
+          claim: trimmedClaim,
+          verification: cachedResult,
+          metadata: {
+            processingTimeMs: Date.now() - startTime,
+            timestamp: new Date().toISOString(),
+            evidenceCount: cachedResult.evidence?.length || 0,
+            cached: true,
+          }
+        }
+      });
+    }
+
+    console.log(`🔍 API: Verifying claim (Cache MISS): "${trimmedClaim.substring(0, 100)}..."`);
+
+    const result: VerificationResult = await detector.verifyClaim(trimmedClaim);
     const processingTime = Date.now() - startTime;
+
+    // Cache the result in Redis
+    await redisService.setCachedVerification(trimmedClaim, result, 'standard');
 
     return res.json({
       success: true,
       data: {
-        claim: claim.trim(),
+        claim: trimmedClaim,
         verification: result,
         metadata: {
           processingTimeMs: processingTime,
           timestamp: new Date().toISOString(),
-          evidenceCount: result.evidence.length
+          evidenceCount: result.evidence.length,
+          cached: false,
         }
       }
     });
@@ -226,7 +278,30 @@ app.post('/verify-claim-agentic', checkInitialized, verifyLimiter, async (req, r
       });
     }
 
-    console.log(`🤖 API: Agentic verification for claim: "${claim.substring(0, 100)}..."`);
+    const trimmedClaim = claim.trim();
+    const startTime = Date.now();
+
+    // Check Redis / in-memory cache first
+    const cachedResult = await redisService.getCachedVerification<any>(trimmedClaim, 'agentic');
+    if (cachedResult) {
+      console.log(`⚡ Agentic Cache HIT for claim: "${trimmedClaim.substring(0, 80)}..."`);
+      return res.json({
+        success: true,
+        data: {
+          claim: trimmedClaim,
+          verification: cachedResult,
+          metadata: {
+            processingTimeMs: Date.now() - startTime,
+            timestamp: new Date().toISOString(),
+            evidenceCount: cachedResult.evidence?.length || 0,
+            verificationType: 'agentic-rag',
+            cached: true,
+          }
+        }
+      });
+    }
+
+    console.log(`🤖 API: Agentic verification (Cache MISS) for claim: "${trimmedClaim.substring(0, 100)}..."`);
 
     // Create per-request context (each request gets its own isolated context)
     const context: import('./agent-orchestrator').VerificationContext = {
@@ -237,21 +312,24 @@ app.post('/verify-claim-agentic', checkInitialized, verifyLimiter, async (req, r
       timestamp: new Date().toISOString(),
     };
 
-    const startTime = Date.now();
     const orchestrator = new AgentOrchestrator(detector, undefined, context);
-    const result = await orchestrator.verifyClaimAgentic(claim.trim(), context);
+    const result = await orchestrator.verifyClaimAgentic(trimmedClaim, context);
     const processingTime = Date.now() - startTime;
+
+    // Cache the agentic verification result
+    await redisService.setCachedVerification(trimmedClaim, result, 'agentic');
 
     return res.json({
       success: true,
       data: {
-        claim: claim.trim(),
+        claim: trimmedClaim,
         verification: result,
         metadata: {
           processingTimeMs: processingTime,
           timestamp: new Date().toISOString(),
-          evidenceCount: result.evidence.length,
-          verificationType: 'agentic-rag'
+          evidenceCount: result.evidence?.length || 0,
+          verificationType: 'agentic-rag',
+          cached: false,
         }
       }
     });
@@ -373,13 +451,34 @@ app.get('/tokens', (req, res) => {
   }
 });
 
+// Clear verification and rumor cache
+app.post('/cache/clear', async (req, res) => {
+  try {
+    const clearedCount = await redisService.clearCache();
+    return res.json({
+      success: true,
+      message: `TruthSpotter cache cleared successfully (${clearedCount} entries removed)`,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error: any) {
+    console.error('❌ Error clearing cache:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Cache clear failed',
+      message: error?.message || 'Failed to clear cache'
+    });
+  }
+});
+
 // System stats endpoint
 app.get('/stats', checkInitialized, async (req, res) => {
   try {
+    const redisHealth = await redisService.getHealth();
     const stats = {
       status: 'operational',
       uptime: process.uptime(),
       memoryUsage: process.memoryUsage(),
+      redis: redisHealth,
       timestamp: new Date().toISOString(),
       version: '1.0.0'
     };

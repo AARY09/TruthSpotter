@@ -43,6 +43,7 @@ Instead of just labeling something as *true or false*, it provides **transparent
 ## ⚙️ Tech Stack
 **Frontend:** Next.js, React, ShadCN UI, Lucide Icons  
 **Backend:** Node.js, Express, PostgreSQL, LangChain  
+**Caching & Rate Limiting:** Redis / Upstash (with automatic in-memory fallback)  
 **Storage & Auth:** Supabase  
 **AI Layer:** Retrieval-Augmented Generation (RAG) with Groq (Llama) + vector search  
 **Deployment:** Vercel  
@@ -63,6 +64,8 @@ Required environment variables:
 - `QDRANT_API_KEY` - Qdrant API key for authentication
 - `SERPAPI_KEY` - SerpAPI key for Google News search
 - `PORT` - Server port (default: 3000)
+- `REDIS_URL` - *(Optional)* Redis connection string (e.g. `redis://default:password@host:port`). If omitted, TruthSpotter runs seamlessly in in-memory mode.
+- `REDIS_CACHE_TTL_SECONDS` - *(Optional)* Cache TTL in seconds for verification results (default: `86400` / 24h)
 
 ### Frontend (`chatwiz-next`)
 
@@ -77,6 +80,7 @@ QDRANT_URL=your_qdrant_url
 QDRANT_API_KEY=your_qdrant_api_key
 SERPAPI_KEY=your_serpapi_key
 PORT=3000
+REDIS_URL=redis://localhost:6379
 ```
 
 ---

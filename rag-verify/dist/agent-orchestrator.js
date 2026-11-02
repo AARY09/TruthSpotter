@@ -226,6 +226,11 @@ class AgentOrchestrator {
     // Router step: Classify query and route accordingly
     async routeQuery(query) {
         this.step(`🔀 Routing query...`);
+        const trimmed = query.trim().toLowerCase();
+        if (/^(hi|hello|hey|howdy|good\s+(morning|afternoon|evening)|who\s+are\s+you|what\s+can\s+you\s+do)[\s!.?]*$/i.test(trimmed)) {
+            this.step(`✅ Query classified as CASUAL (greeting)`);
+            return 'casual';
+        }
         try {
             // Use a simple LLM call to classify the query
             const classificationPrompt = `Classify the following user query as either "CASUAL" or "VERIFICATION_REQUIRED".
@@ -238,7 +243,7 @@ Rules:
 
 Respond with ONLY one word: either "CASUAL" or "VERIFICATION_REQUIRED"`;
             const classification = (await this.detector.generateCompletion(classificationPrompt, {
-                maxOutputTokens: 10,
+                maxOutputTokens: 250,
                 temperature: 0.1,
                 operation: 'queryRouter',
             }))
@@ -254,6 +259,7 @@ Respond with ONLY one word: either "CASUAL" or "VERIFICATION_REQUIRED"`;
             }
         }
         catch (error) {
+            console.warn('⚠️ Router error:', error?.message || error);
             this.step(`⚠️ Classification failed, defaulting to VERIFICATION_REQUIRED`);
         }
         // Default to verification if classification fails
