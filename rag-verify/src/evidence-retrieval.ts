@@ -95,14 +95,19 @@ export function formatArticleForEmbedding(article: NewsArticlePayload): string {
 }
 
 export function articlesToDocuments(articles: NewsArticlePayload[]): Document[] {
-  return articles.map((article) =>
+  return articles.map((article, idx) =>
     new Document({
       pageContent: formatArticleForEmbedding(article),
       metadata: {
         title: toTextField(article.title) || 'Untitled',
         link: toTextField(article.link),
         date: toTextField(article.date),
+        id: `doc_${idx + 1}`,
         source: toTextField(article.source) || 'Unknown',
+        publisher: toTextField(article.source) || 'Unknown',
+        url: toTextField(article.link),
+        snippet: toTextField(article.snippet),
+        fullText: formatArticleForEmbedding(article),
         type: 'news_article',
       },
     })

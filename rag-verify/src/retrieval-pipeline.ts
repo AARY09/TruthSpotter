@@ -83,7 +83,8 @@ export async function retrieveEvidence(
   const keywords = extractKeywordTokens(plan.primaryQuery, plan.claimKeywords);
   const candidates: Array<{ doc: Document; semanticScore: number }> = [];
 
-  for (const article of freshArticles) {
+  for (let i = 0; i < freshArticles.length; i++) {
+    const article = freshArticles[i];
     candidates.push({
       doc: new Document({
         pageContent: formatArticleForEmbedding(article),
@@ -91,7 +92,12 @@ export async function retrieveEvidence(
           title: article.title,
           link: article.link,
           date: article.date,
+          id: `doc_${i + 1}`,
           source: article.source,
+          publisher: article.source,
+          url: article.link,
+          snippet: article.snippet,
+          fullText: formatArticleForEmbedding(article),
           type: 'news_article',
           fresh: true,
         },

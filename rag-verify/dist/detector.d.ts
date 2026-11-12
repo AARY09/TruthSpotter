@@ -1,17 +1,41 @@
 import 'dotenv/config';
 import { Document } from '@langchain/core/documents';
 import { type OptimizedSearchPlan } from './query-optimizer';
-interface NewsArticle {
+export type EvidenceStance = 'SUPPORTS' | 'CONTRADICTS' | 'NEUTRAL_CONTEXT';
+export interface NewsArticle {
+    id?: string;
+    citationNumber?: number;
     title: string;
     snippet: string;
     link: string;
     date: string;
+    url?: string;
     source?: string;
+    publisher?: string;
+    stance?: EvidenceStance;
+    finding?: string;
+    highlightedQuote?: string;
+    supportsVerdict?: boolean;
 }
-interface VerificationResult {
+export interface FactualStatement {
+    statement: string;
+    citationIds: string[];
+    citationNumbers: number[];
+    sources?: {
+        id: string;
+        title: string;
+        publisher: string;
+        link: string;
+    }[];
+}
+export interface VerificationResult {
     isVerified: boolean;
     confidence: number;
     evidence: NewsArticle[];
+    supportingEvidence: NewsArticle[];
+    contradictingEvidence: NewsArticle[];
+    contextEvidence: NewsArticle[];
+    factualStatements: FactualStatement[];
     analysis: string;
     riskLevel: 'LOW' | 'MEDIUM' | 'HIGH';
     factCheckSummary: string;
@@ -60,6 +84,6 @@ declare class MisinformationDetector {
     updateNewsDatabase(topics: string[]): Promise<void>;
     verifyClaim(claim: string): Promise<VerificationResult>;
 }
-export { MisinformationDetector, VerificationResult, NewsArticle, ClaimAnalysis };
+export { MisinformationDetector, ClaimAnalysis };
 export { optimizeSearchQueries } from './query-optimizer';
 //# sourceMappingURL=detector.d.ts.map

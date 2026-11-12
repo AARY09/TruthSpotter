@@ -1,9 +1,13 @@
-import { MisinformationDetector, NewsArticle } from './detector';
+import { MisinformationDetector, NewsArticle, FactualStatement } from './detector';
 import { type TokenUsageSnapshot } from './token-monitor';
 export interface AgenticVerificationResult {
     isVerified: boolean;
     confidence: number;
     evidence: NewsArticle[];
+    supportingEvidence: NewsArticle[];
+    contradictingEvidence: NewsArticle[];
+    contextEvidence: NewsArticle[];
+    factualStatements: FactualStatement[];
     analysis: string;
     riskLevel: 'LOW' | 'MEDIUM' | 'HIGH';
     factCheckSummary: string;

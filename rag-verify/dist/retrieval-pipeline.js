@@ -47,7 +47,8 @@ async function indexArticlesSafe(articles, storeArticles) {
 async function retrieveEvidence(plan, vectorStore, freshArticles, limit = evidence_retrieval_1.MAX_EVIDENCE_RESULTS) {
     const keywords = (0, evidence_retrieval_1.extractKeywordTokens)(plan.primaryQuery, plan.claimKeywords);
     const candidates = [];
-    for (const article of freshArticles) {
+    for (let i = 0; i < freshArticles.length; i++) {
+        const article = freshArticles[i];
         candidates.push({
             doc: new documents_1.Document({
                 pageContent: (0, evidence_retrieval_1.formatArticleForEmbedding)(article),
@@ -55,7 +56,12 @@ async function retrieveEvidence(plan, vectorStore, freshArticles, limit = eviden
                     title: article.title,
                     link: article.link,
                     date: article.date,
+                    id: `doc_${i + 1}`,
                     source: article.source,
+                    publisher: article.source,
+                    url: article.link,
+                    snippet: article.snippet,
+                    fullText: (0, evidence_retrieval_1.formatArticleForEmbedding)(article),
                     type: 'news_article',
                     fresh: true,
                 },

@@ -71,8 +71,11 @@ const Index = () => {
 
     if (!error && data) {
       const toSidebarStatus = (status: string | null | undefined): Verification["status"] => {
-        if (status === "verified" || status === "true") return "true";
-        if (status === "refuted" || status === "false") return "false";
+        if (!status) return "unverified";
+        const s = status.toLowerCase();
+        if (s === "verified" || s === "true" || s === "supported") return "true";
+        if (s === "refuted" || s === "false" || s === "debunked") return "false";
+        if (s === "inconclusive") return "inconclusive";
         return "unverified";
       };
 
@@ -142,11 +145,15 @@ const Index = () => {
         setCurrentResult(result);
 
         // Store assistant message
+        const finalStatus = result.verdict 
+          ? result.verdict.toLowerCase() 
+          : (result.isVerified ? "verified" : "refuted");
+
         await supabase.from("messages").insert({
           conversation_id: conversationId,
           role: "assistant",
           content: result.factCheckSummary ?? "",
-          verification_status: result.isVerified ? "verified" : "refuted",
+          verification_status: finalStatus,
           confidence: Math.round(result.confidence ?? 0),
           summary: result.factCheckSummary ?? "",
           sources: result.evidence ?? [],
@@ -315,6 +322,7 @@ const Index = () => {
             {/* Final result */}
             {currentResult && !isVerifying && (
               <VerificationResult
+                claim={currentClaim || ""}
                 status={(() => {
                   const s = currentResult.verification_status;
                   if (s === "verified" || s === "true") return "true";
@@ -325,7 +333,12 @@ const Index = () => {
                 })()}
                 confidence={currentResult.confidence ?? 0}
                 summary={currentResult.summary ?? currentResult.factCheckSummary ?? ""}
+                analysis={currentResult.analysis}
                 sources={currentResult.sources ?? currentResult.evidence ?? []}
+                supportingEvidence={currentResult.supportingEvidence}
+                contradictingEvidence={currentResult.contradictingEvidence}
+                contextEvidence={currentResult.contextEvidence}
+                factualStatements={currentResult.factualStatements}
               />
             )}
 

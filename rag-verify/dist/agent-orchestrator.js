@@ -214,6 +214,10 @@ class AgentOrchestrator {
                 factCheckSummary: 'Verification failed due to an error. Please try again.',
                 analysis: `Error: ${error?.message || 'Unknown error occurred during verification'}`,
                 evidence: mappedEvidence,
+                supportingEvidence: [],
+                contradictingEvidence: [],
+                contextEvidence: [],
+                factualStatements: [],
                 agentInsights: this.agentInsights,
                 searchQueries: this.searchQueries,
                 evidenceSources: this.evidenceDocs.length,
@@ -291,6 +295,10 @@ Provide a helpful response. Be concise but informative.`;
                 factCheckSummary: casualResponse || 'I\'m here to help with your question!',
                 analysis: 'This was a casual query handled by the conversational agent.',
                 evidence: [],
+                supportingEvidence: [],
+                contradictingEvidence: [],
+                contextEvidence: [],
+                factualStatements: [],
                 agentInsights: {
                     claimAnalyst: 'N/A - Casual query',
                     evidenceResearcher: 'N/A - Casual query',
@@ -311,6 +319,10 @@ Provide a helpful response. Be concise but informative.`;
                 factCheckSummary: 'I apologize, but I encountered an error processing your casual query. Please try rephrasing your question.',
                 analysis: `Error: ${error?.message || 'Unknown error'}`,
                 evidence: [],
+                supportingEvidence: [],
+                contradictingEvidence: [],
+                contextEvidence: [],
+                factualStatements: [],
                 agentInsights: {
                     claimAnalyst: 'N/A - Casual query',
                     evidenceResearcher: 'N/A - Casual query',
@@ -345,18 +357,21 @@ Provide a helpful response. Be concise but informative.`;
             const verification = await this.detector.verifyClaimWithEvidence(claim, this.evidenceDocs, analysis);
             this.agentInsights.factChecker = `Verdict: ${verification.isVerified ? 'SUPPORTED' : 'REFUTED/INCONCLUSIVE'}`;
             this.step(`✅ Fact Checker completed`);
-            // Build final result
-            const mappedEvidence = this.mapEvidenceToNewsArticles(this.evidenceDocs);
+            // Build final result with enriched evidence and citation tracing
             const finalResult = {
                 isVerified: verification.isVerified,
                 confidence: verification.confidence,
                 riskLevel: verification.riskLevel,
                 factCheckSummary: verification.factCheckSummary,
                 analysis: verification.analysis,
-                evidence: mappedEvidence,
+                evidence: verification.evidence && verification.evidence.length > 0 ? verification.evidence : this.mapEvidenceToNewsArticles(this.evidenceDocs),
+                supportingEvidence: verification.supportingEvidence || [],
+                contradictingEvidence: verification.contradictingEvidence || [],
+                contextEvidence: verification.contextEvidence || [],
+                factualStatements: verification.factualStatements || [],
                 agentInsights: this.agentInsights,
                 searchQueries: this.searchQueries,
-                evidenceSources: this.evidenceDocs.length,
+                evidenceSources: verification.evidence?.length || this.evidenceDocs.length,
             };
             this.step(`🎯 Verification complete`);
             return finalResult;

@@ -236,17 +236,27 @@ class MisinformationDetector {
                 catch { }
             }
             const jsonStart = response.indexOf('{');
-            const jsonEnd = response.lastIndexOf('}');
-            if (jsonStart !== -1 && jsonEnd > jsonStart) {
-                const candidate = response
-                    .substring(jsonStart, jsonEnd + 1)
-                    .replace(/[\n\r]+/g, ' ')
-                    .replace(/,\s*}/g, '}')
-                    .replace(/,\s*]/g, ']');
-                try {
-                    return JSON.parse(candidate);
+            if (jsonStart !== -1) {
+                const candidate = response.substring(jsonStart).trim();
+                const jsonEnd = candidate.lastIndexOf('}');
+                if (jsonEnd !== -1) {
+                    try {
+                        return JSON.parse(candidate
+                            .substring(0, jsonEnd + 1)
+                            .replace(/,\s*}/g, '}')
+                            .replace(/,\s*]/g, ']'));
+                    }
+                    catch { }
                 }
-                catch { }
+                // Auto-repair truncated JSON: find the last complete object in array
+                const lastBrace = candidate.lastIndexOf('},');
+                if (lastBrace !== -1) {
+                    const repaired = candidate.substring(0, lastBrace + 1) + ']}';
+                    try {
+                        return JSON.parse(repaired.replace(/,\s*}/g, '}').replace(/,\s*]/g, ']'));
+                    }
+                    catch { }
+                }
             }
             console.error('❌ Invalid JSON response text:', response);
             throw new Error('Invalid JSON in model response');
@@ -322,57 +332,168 @@ Return JSON:
     // VERIFY CLAIM WITH EVIDENCE
     // ==============================
     async verifyClaimWithEvidence(claim, evidence, analysis) {
-        const evidenceText = evidence
-            .map((doc, i) => `Evidence ${i + 1}: ${doc.pageContent}\nSource: ${doc.metadata.source}\nDate: ${doc.metadata.date}\n---`)
+        const evidenceItemsFormatted = evidence.slice(0, 6).map((doc, idx) => {
+            const meta = doc.metadata;
+            const id = meta.id || `doc_${idx + 1}`;
+            const title = meta.title || 'Untitled Article';
+            const source = meta.publisher || meta.source || 'Unknown Publisher';
+            const date = meta.date || 'Unknown date';
+            const url = meta.link || meta.url || '';
+            const snippet = meta.snippet || doc.pageContent.slice(0, 300);
+            return {
+                id,
+                citationNumber: idx + 1,
+                title,
+                source,
+                publisher: source,
+                date,
+                url,
+                link: url,
+                snippet,
+                doc,
+            };
+        });
+        const evidenceText = evidenceItemsFormatted
+            .map((item) => `[Evidence ${item.id}] (Citation [${item.citationNumber}])\nTitle: ${item.title}\nPublisher: ${item.publisher}\nDate: ${item.date}\nURL: ${item.url}\nContent: ${item.snippet}\n---`)
             .join('\n');
         const prompt = `
-You must respond ONLY with a valid JSON object. Do not include explanations, text, or code fences.
+You must respond ONLY with a valid JSON object. Do not include markdown code fences, comments, or extra text.
 
-You are a professional fact-checker. Thoroughly evaluate the user's claim against the provided evidence articles.
+You are an expert fact-checker and investigative journalist. Thoroughly evaluate the user's claim against the provided evidence articles.
 
 Claim: "${claim}"
 Extracted Sub-Claims: ${analysis.extractedClaims.join(', ')}
 
-Evidence:
+Evidence Articles:
 ${evidenceText || 'No direct news articles found.'}
 
 Instructions:
-- isVerified: true if the evidence supports the claim; false if the evidence refutes the claim or if it is false/unsupported.
-- confidence: a number between 0 and 100 indicating your confidence in the verdict based on the evidence.
-- riskLevel: "LOW" (credible / true), "MEDIUM" (partially true / mixed / unverifiable), or "HIGH" (false / misleading / misinformation).
-- analysis: Detailed, clear multi-sentence explanation breaking down what the evidence says, the timeline, sources, and reasons for the verdict.
-- factCheckSummary: A clear, authoritative summary of the fact-check verdict for the reader.
+1. Evaluate EVERY evidence article provided above:
+   - id: The exact evidence ID (e.g. "doc_1", "doc_2", etc.)
+   - stance: "SUPPORTS" (directly verifies/confirms the claim), "CONTRADICTS" (refutes/debunks/contradicts the claim), or "NEUTRAL_CONTEXT" (reports warnings, background, or context without confirming or denying)
+   - finding: A concise 1-sentence description of what this specific article reports regarding the claim (max 25 words).
+   - highlightedQuote: 1 key verbatim sentence/phrase from the article text that backs up your finding (max 25 words).
+   - supportsVerdict: boolean (true if this article's evidence aligns with your final verdict; false if it opposes or is neutral)
 
-Return JSON format:
+2. Synthesize 2 to 4 major factual statements establishing the verdict:
+   - statement: Clear factual statement
+   - citationIds: Array of evidence IDs supporting this statement (e.g. ["doc_1", "doc_2"])
+
+3. Determine the overall verdict:
+   - isVerified: true if the evidence supports the claim; false if the evidence refutes the claim or if it is false/unsupported.
+   - confidence: 0 to 100 confidence score based on the weight of evidence.
+   - riskLevel: "LOW" (credible / true), "MEDIUM" (mixed / context / unverified), or "HIGH" (false / misleading / misinformation).
+   - factCheckSummary: A clear, authoritative summary of the fact-check verdict. Include inline citations like [1], [2] referencing the citation numbers of evidence sources.
+   - analysis: Detailed, clear multi-sentence explanation breaking down what the evidence says, the timeline, sources, and reasons for the verdict. Include inline citations [1], [2].
+
+Return JSON in this exact structure:
 {
-  "isVerified": true,
-  "confidence": 90,
-  "riskLevel": "LOW",
+  "isVerified": false,
+  "confidence": 95,
+  "riskLevel": "HIGH",
+  "factCheckSummary": "The claim is false [1]. Multiple sources confirmed no such event occurred [1], [2].",
   "analysis": "...",
-  "factCheckSummary": "..."
+  "evidenceFindings": [
+    {
+      "id": "doc_1",
+      "stance": "CONTRADICTS",
+      "finding": "Contradicts the claim by confirming no incident occurred.",
+      "highlightedQuote": "...",
+      "supportsVerdict": true
+    }
+  ],
+  "factualStatements": [
+    {
+      "statement": "...",
+      "citationIds": ["doc_1"]
+    }
+  ]
 }`;
         try {
             const response = await (0, groq_llm_1.groqCompleteWithRetry)(prompt, {
-                maxTokens: 1500,
+                maxTokens: 3500,
                 temperature: 0.1,
                 requireJson: true,
                 operation: 'factChecker',
             });
             const parsed = this.extractJsonFromResponse(response);
-            const relevantArticles = evidence.map((doc) => {
-                const meta = doc.metadata;
+            const rawFindings = Array.isArray(parsed.evidenceFindings) ? parsed.evidenceFindings : [];
+            const enrichedArticles = evidenceItemsFormatted.map((item, idx) => {
+                const findingMatch = rawFindings.find((f) => f.id === item.id ||
+                    f.id === `doc_${item.citationNumber}` ||
+                    f.id === String(item.citationNumber) ||
+                    f.id === `doc_${idx + 1}` ||
+                    f.id === String(idx + 1)) || rawFindings[idx];
+                let stance = 'NEUTRAL_CONTEXT';
+                if (findingMatch?.stance) {
+                    const upper = String(findingMatch.stance).toUpperCase();
+                    if (upper.includes('SUPPORT'))
+                        stance = 'SUPPORTS';
+                    else if (upper.includes('CONTRADICT') || upper.includes('REFUTE') || upper.includes('FALSE'))
+                        stance = 'CONTRADICTS';
+                }
+                else {
+                    stance = parsed.isVerified ? 'SUPPORTS' : 'CONTRADICTS';
+                }
+                const finding = findingMatch?.finding ||
+                    (stance === 'SUPPORTS'
+                        ? 'Supports the claim based on reported evidence'
+                        : stance === 'CONTRADICTS'
+                            ? 'Contradicts or refutes the claim'
+                            : 'Provides contextual background on the claim');
+                const highlightedQuote = findingMatch?.highlightedQuote ||
+                    item.snippet ||
+                    'No direct quote available.';
+                const supportsVerdict = findingMatch?.supportsVerdict ??
+                    (stance === 'SUPPORTS' ? parsed.isVerified : !parsed.isVerified);
                 return {
-                    title: meta.title ?? 'Untitled',
-                    snippet: doc.pageContent.substring(0, 200) + '...',
-                    link: meta.link ?? '',
-                    date: meta.date ?? 'Unknown date',
-                    source: meta.source ?? 'Unknown',
+                    id: item.id,
+                    citationNumber: item.citationNumber,
+                    title: item.title,
+                    snippet: item.snippet,
+                    link: item.link,
+                    url: item.url,
+                    date: item.date,
+                    source: item.source,
+                    publisher: item.publisher,
+                    stance,
+                    finding,
+                    highlightedQuote,
+                    supportsVerdict,
+                };
+            });
+            const supportingEvidence = enrichedArticles.filter((a) => a.stance === 'SUPPORTS');
+            const contradictingEvidence = enrichedArticles.filter((a) => a.stance === 'CONTRADICTS');
+            const contextEvidence = enrichedArticles.filter((a) => a.stance === 'NEUTRAL_CONTEXT');
+            // Map factual statements with citations
+            const rawStatements = Array.isArray(parsed.factualStatements) ? parsed.factualStatements : [];
+            const factualStatements = rawStatements.map((stmt) => {
+                const citationIds = Array.isArray(stmt.citationIds)
+                    ? stmt.citationIds.map(String)
+                    : [];
+                const matchedArticles = enrichedArticles.filter((a) => citationIds.includes(a.id || '') ||
+                    citationIds.includes(`doc_${a.citationNumber}`) ||
+                    citationIds.includes(String(a.citationNumber)));
+                return {
+                    statement: String(stmt.statement || ''),
+                    citationIds,
+                    citationNumbers: matchedArticles.map((a) => a.citationNumber || 1),
+                    sources: matchedArticles.map((a) => ({
+                        id: a.id || '',
+                        title: a.title,
+                        publisher: a.publisher || a.source || 'Unknown',
+                        link: a.link,
+                    })),
                 };
             });
             return {
-                isVerified: parsed.isVerified || false,
-                confidence: parsed.confidence || 0,
-                evidence: relevantArticles,
+                isVerified: parsed.isVerified ?? false,
+                confidence: parsed.confidence ?? 0,
+                evidence: enrichedArticles,
+                supportingEvidence,
+                contradictingEvidence,
+                contextEvidence,
+                factualStatements,
                 analysis: parsed.analysis || 'Unable to analyze claim',
                 riskLevel: parsed.riskLevel || 'MEDIUM',
                 factCheckSummary: parsed.factCheckSummary || 'Unable to verify claim',
@@ -380,10 +501,34 @@ Return JSON format:
         }
         catch (error) {
             console.error('❌ Error in claim verification:', error);
+            const fallbackArticles = evidence.map((doc, idx) => {
+                const meta = doc.metadata;
+                const link = meta.link || meta.url || '';
+                const source = meta.publisher || meta.source || 'Unknown';
+                return {
+                    id: meta.id || `doc_${idx + 1}`,
+                    citationNumber: idx + 1,
+                    title: meta.title || 'Untitled',
+                    snippet: doc.pageContent.substring(0, 200) + '...',
+                    link,
+                    url: link,
+                    date: meta.date || 'Unknown date',
+                    source,
+                    publisher: source,
+                    stance: 'NEUTRAL_CONTEXT',
+                    finding: 'Analyzed in connection with the claim',
+                    highlightedQuote: doc.pageContent.substring(0, 150),
+                    supportsVerdict: false,
+                };
+            });
             return {
                 isVerified: false,
                 confidence: 0,
-                evidence: [],
+                evidence: fallbackArticles,
+                supportingEvidence: [],
+                contradictingEvidence: [],
+                contextEvidence: fallbackArticles,
+                factualStatements: [],
                 analysis: 'Error occurred during verification',
                 riskLevel: 'MEDIUM',
                 factCheckSummary: 'Verification failed due to model error',
@@ -424,6 +569,10 @@ Return JSON format:
                     isVerified: false,
                     confidence: 0,
                     evidence: [],
+                    supportingEvidence: [],
+                    contradictingEvidence: [],
+                    contextEvidence: [],
+                    factualStatements: [],
                     analysis: 'No relevant evidence found',
                     riskLevel: 'MEDIUM',
                     factCheckSummary: 'Insufficient evidence found. Please consult official news sources.',

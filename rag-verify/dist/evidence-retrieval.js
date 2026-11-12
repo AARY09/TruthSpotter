@@ -70,13 +70,18 @@ function formatArticleForEmbedding(article) {
     ].join('\n');
 }
 function articlesToDocuments(articles) {
-    return articles.map((article) => new documents_1.Document({
+    return articles.map((article, idx) => new documents_1.Document({
         pageContent: formatArticleForEmbedding(article),
         metadata: {
             title: toTextField(article.title) || 'Untitled',
             link: toTextField(article.link),
             date: toTextField(article.date),
+            id: `doc_${idx + 1}`,
             source: toTextField(article.source) || 'Unknown',
+            publisher: toTextField(article.source) || 'Unknown',
+            url: toTextField(article.link),
+            snippet: toTextField(article.snippet),
+            fullText: formatArticleForEmbedding(article),
             type: 'news_article',
         },
     }));
